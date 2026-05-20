@@ -1,0 +1,12 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - iferrinline
+  settings:
+    custom:
+      iferrinline:
+        type: module
+        description: reports err assignments followed by `if err != nil` that can be inlined
+        original-url: github.com/justtrackio/go-linters

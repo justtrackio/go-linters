@@ -1,0 +1,11 @@
+# Build artifacts from `golangci-lint custom`
+/bin/
+
+# Local build of cmd/iferrinline left at the repo root
+/iferrinline
+
+# Editor / OS
+.DS_Store
+*.swp
+/.idea/
+/.claude/

@@ -1,0 +1,167 @@
+package iferrinline
+
+import "errors"
+
+func boom() error { return errors.New("x") }
+
+func AlreadyInline() error {
+	if err := boom(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ShouldInline() error {
+	if err := boom(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ErrUsedAfter() error {
+	err := boom()
+	if err != nil {
+		return err
+	}
+	_ = err
+	return nil
+}
+
+func NotErrName() error {
+	e := boom()
+	if e != nil {
+		return e
+	}
+	return nil
+}
+
+func IfHasInitAlready() error {
+	if err := boom(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func bar() (int, error) { return 0, nil }
+
+func use(int) {}
+
+func wrap(e error) error { return e }
+
+func MultiBlank() error {
+	if _, err := bar(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func MultiCompanionUnusedAfter() error {
+	if x, err := bar(); err != nil {
+		_ = x
+		return err
+	}
+	return nil
+}
+
+func MultiCompanionUsedAfter() error {
+	var err error
+	var x int
+
+	if x, err = bar(); err != nil {
+		return err
+	}
+
+	use(x)
+	return nil
+}
+
+func withCallback(fn func() int) (int, error) { return fn(), nil }
+
+func MultiLineCallNotFlagged() error {
+	x, err := withCallback(func() int {
+		return 42
+	})
+	if err != nil {
+		return err
+	}
+	use(x)
+	return nil
+}
+
+func three() (string, bool, error) { return "", false, nil }
+
+func use2(string, bool) {}
+
+func ThreeReturns() error {
+	var ok bool
+	var err error
+	var s string
+
+	if s, ok, err = three(); err != nil {
+		return err
+	}
+
+	use2(s, ok)
+	return nil
+}
+
+func MultiErrReused() error {
+	var err error
+	var x int
+
+	if x, err = bar(); err != nil {
+		return err
+	}
+
+	err = wrap(err)
+	_ = err
+	use(x)
+	return nil
+}
+
+func ConsecutiveErrSites() error {
+	var err error
+	var a int
+	var b int
+
+	if a, err = bar(); err != nil {
+		return err
+	}
+
+	if b, err = bar(); err != nil {
+		return err
+	}
+
+	use(a)
+	use(b)
+	return nil
+}
+
+func ExistingVarBlock() error {
+	var err error
+	var existing int
+	var a int
+
+	if a, err = bar(); err != nil {
+		return err
+	}
+
+	use(a)
+	_ = existing
+	return nil
+}
+
+func ExistingVarBlockReorder() error {
+	var err error
+	var x int
+	var a int
+
+	if a, err = bar(); err != nil {
+		return err
+	}
+
+	use(a)
+	use(x)
+	_ = err
+	return nil
+}
