@@ -180,3 +180,27 @@ func ExistingVarBlockReorder() error {
 	_ = err
 	return nil
 }
+
+func NamedReturnErrNestedBlock(items []int) (err error) {
+	for _, item := range items {
+		a, err := bar() // want "if err can be inlined by hoisting a to var declarations at the top of the function and changing := to ="
+		if err != nil {
+			return err
+		}
+		use(a)
+		use(item)
+	}
+	return
+}
+
+func ParamErrNestedBlock(err error) error {
+	for i := 0; i < 3; i++ {
+		a, err := bar() // want "if err can be inlined by hoisting a to var declarations at the top of the function and changing := to ="
+		if err != nil {
+			return err
+		}
+		use(a)
+		use(i)
+	}
+	return err
+}

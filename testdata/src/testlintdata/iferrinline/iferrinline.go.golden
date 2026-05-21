@@ -198,3 +198,31 @@ func ExistingVarBlockReorder() error {
 	_ = err
 	return nil
 }
+
+func NamedReturnErrNestedBlock(items []int) (err error) {
+	var a int
+
+	for _, item := range items {
+		if a, err = bar(); err != nil {
+			return err
+		}
+
+		use(a)
+		use(item)
+	}
+	return
+}
+
+func ParamErrNestedBlock(err error) error {
+	var a int
+
+	for i := 0; i < 3; i++ {
+		if a, err = bar(); err != nil {
+			return err
+		}
+
+		use(a)
+		use(i)
+	}
+	return err
+}

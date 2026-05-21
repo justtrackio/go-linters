@@ -78,7 +78,7 @@ func (p *Plugin) run(pass *analysis.Pass) (any, error) {
 		declEditByFn := map[*ast.BlockStmt]declEdit{}
 		declOkByFn := map[*ast.BlockStmt]bool{}
 		for fnBody, idxs := range hoistByFn {
-			if edit, ok := computeDeclEdit(pass, imports, candidates, idxs); ok {
+			if edit, ok := computeDeclEdit(pass, file, imports, candidates, idxs); ok {
 				declEditByFn[fnBody] = edit
 				declOkByFn[fnBody] = true
 			}
@@ -362,7 +362,7 @@ func hoistWouldShadow(pass *analysis.Pass, fnBody *ast.BlockStmt, name string, o
 	return shadow
 }
 
-func computeDeclEdit(pass *analysis.Pass, imports map[string]string, candidates []candidate, idxs []int) (declEdit, bool) {
+func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]string, candidates []candidate, idxs []int) (declEdit, bool) {
 	if pass.TypesInfo == nil {
 		return declEdit{}, false
 	}
@@ -384,6 +384,9 @@ func computeDeclEdit(pass *analysis.Pass, imports map[string]string, candidates 
 		missing      bool
 	)
 	for name := range allNames {
+		seen[name] = true
+	}
+	for name := range functionScopeNames(file, fnBody) {
 		seen[name] = true
 	}
 	qualPkgs := func(p *types.Package) string {
@@ -668,6 +671,63 @@ func buildImportMap(file *ast.File) map[string]string {
 		m[path] = alias
 	}
 	return m
+}
+
+// functionScopeNames returns names declared at the function-body scope of
+// fnBody — i.e. receiver, parameters, and named return values. Per the Go
+// spec, these share a block with the function body, so introducing a `var X`
+// at the top of the body for any of those names would be a redeclaration.
+func functionScopeNames(file *ast.File, fnBody *ast.BlockStmt) map[string]bool {
+	names := map[string]bool{}
+	var (
+		recv    *ast.FieldList
+		params  *ast.FieldList
+		results *ast.FieldList
+		found   bool
+	)
+	ast.Inspect(file, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			if x.Body == fnBody {
+				recv = x.Recv
+				if x.Type != nil {
+					params = x.Type.Params
+					results = x.Type.Results
+				}
+				found = true
+				return false
+			}
+		case *ast.FuncLit:
+			if x.Body == fnBody {
+				if x.Type != nil {
+					params = x.Type.Params
+					results = x.Type.Results
+				}
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	add := func(list *ast.FieldList) {
+		if list == nil {
+			return
+		}
+		for _, field := range list.List {
+			for _, ident := range field.Names {
+				if ident.Name != "" && ident.Name != "_" {
+					names[ident.Name] = true
+				}
+			}
+		}
+	}
+	add(recv)
+	add(params)
+	add(results)
+	return names
 }
 
 func enclosingFuncBody(file *ast.File, pos token.Pos) *ast.BlockStmt {
