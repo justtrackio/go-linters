@@ -1,6 +1,10 @@
 package iferrinline
 
-import "errors"
+import (
+	"errors"
+
+	"testlintdata/iferrinline/widget"
+)
 
 func boom() error { return errors.New("x") }
 
@@ -136,6 +140,30 @@ func ExistingVarBlock() error {
 	}
 	use(a)
 	_ = existing
+	return nil
+}
+
+type holder struct {
+	widget *widget.Service
+}
+
+func PackageShadow() (*holder, error) {
+	widget, err := widget.New() // want "if err can be inlined by hoisting widget \\(renamed to service to avoid shadowing\\) to var declarations at the top of the function and changing := to ="
+	if err != nil {
+		return nil, err
+	}
+	return &holder{widget: widget}, nil
+}
+
+func useService(*widget.Service) {}
+
+func ParamShadow(svc *widget.Service) error {
+	useService(svc)
+	svc, err := widget.With(svc) // want "if err can be inlined by hoisting svc to var declarations at the top of the function and changing := to ="
+	if err != nil {
+		return err
+	}
+	useService(svc)
 	return nil
 }
 

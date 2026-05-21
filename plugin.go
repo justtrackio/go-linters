@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/golangci/plugin-module-register/register"
 	"golang.org/x/tools/go/analysis"
@@ -41,6 +42,7 @@ type candidate struct {
 	ifStmt     *ast.IfStmt
 	hoistNames []string
 	fnBody     *ast.BlockStmt
+	renames    map[string]string // original LHS name → fresh name (when hoisting would shadow)
 }
 
 type declEdit struct {
@@ -59,7 +61,7 @@ func (p *Plugin) run(pass *analysis.Pass) (any, error) {
 				return true
 			}
 			for i := 0; i < len(block.List)-1; i++ {
-				if c, ok := matchPattern(pass.Fset, file, block, i); ok {
+				if c, ok := matchPattern(pass, file, block, i); ok {
 					candidates = append(candidates, c)
 				}
 			}
@@ -86,7 +88,15 @@ func (p *Plugin) run(pass *analysis.Pass) (any, error) {
 		for _, c := range candidates {
 			msg := "if err can be inlined into the assignment"
 			if len(c.hoistNames) > 0 {
-				msg = "if err can be inlined by hoisting " + strings.Join(c.hoistNames, ", ") +
+				hoistDisplay := make([]string, len(c.hoistNames))
+				for i, name := range c.hoistNames {
+					if r, ok := c.renames[name]; ok {
+						hoistDisplay[i] = name + " (renamed to " + r + " to avoid shadowing)"
+					} else {
+						hoistDisplay[i] = name
+					}
+				}
+				msg = "if err can be inlined by hoisting " + strings.Join(hoistDisplay, ", ") +
 					" to var declarations at the top of the function and changing := to ="
 			}
 			diag := analysis.Diagnostic{
@@ -116,7 +126,7 @@ func (p *Plugin) run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-func matchPattern(fset *token.FileSet, file *ast.File, block *ast.BlockStmt, i int) (candidate, bool) {
+func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i int) (candidate, bool) {
 	var zero candidate
 
 	assign, ok := block.List[i].(*ast.AssignStmt)
@@ -147,7 +157,7 @@ func matchPattern(fset *token.FileSet, file *ast.File, block *ast.BlockStmt, i i
 	if !hasErr {
 		return zero, false
 	}
-	if fset.Position(assign.Pos()).Line != fset.Position(assign.End()).Line {
+	if pass.Fset.Position(assign.Pos()).Line != pass.Fset.Position(assign.End()).Line {
 		return zero, false
 	}
 
@@ -173,8 +183,183 @@ func matchPattern(fset *token.FileSet, file *ast.File, block *ast.BlockStmt, i i
 	c := candidate{assign: assign, ifStmt: ifStmt, hoistNames: hoist}
 	if len(hoist) > 0 {
 		c.fnBody = enclosingFuncBody(file, assign.Pos())
+		if c.fnBody == nil {
+			return zero, false
+		}
+		ownObjs := candidateOwnObjs(pass, assign)
+		used := collectUsedNames(c.fnBody)
+		for _, name := range hoist {
+			if isPartialRedecl(pass, assign, name) {
+				// Companion reuses an outer-scope var (e.g. a parameter); the
+				// hoist path just converts := to = without introducing a new
+				// declaration, so no shadowing is possible.
+				continue
+			}
+			if !hoistWouldShadow(pass, c.fnBody, name, ownObjs) {
+				continue
+			}
+			obj := lhsObj(pass, assign, name)
+			newName := pickFreshName(name, obj, used)
+			if newName == "" {
+				return zero, false
+			}
+			if c.renames == nil {
+				c.renames = map[string]string{}
+			}
+			c.renames[name] = newName
+			used[newName] = true
+		}
 	}
 	return c, true
+}
+
+func isPartialRedecl(pass *analysis.Pass, assign *ast.AssignStmt, name string) bool {
+	if pass.TypesInfo == nil {
+		return false
+	}
+	for _, e := range assign.Lhs {
+		id, ok := e.(*ast.Ident)
+		if !ok || id.Name != name {
+			continue
+		}
+		return pass.TypesInfo.Defs[id] == nil
+	}
+	return false
+}
+
+func candidateOwnObjs(pass *analysis.Pass, assign *ast.AssignStmt) map[types.Object]bool {
+	objs := map[types.Object]bool{}
+	if pass.TypesInfo == nil {
+		return objs
+	}
+	for _, e := range assign.Lhs {
+		id, ok := e.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if obj := pass.TypesInfo.Defs[id]; obj != nil {
+			objs[obj] = true
+		}
+	}
+	return objs
+}
+
+func lhsObj(pass *analysis.Pass, assign *ast.AssignStmt, name string) types.Object {
+	if pass.TypesInfo == nil {
+		return nil
+	}
+	for _, e := range assign.Lhs {
+		id, ok := e.(*ast.Ident)
+		if !ok || id.Name != name {
+			continue
+		}
+		if obj := pass.TypesInfo.Defs[id]; obj != nil {
+			return obj
+		}
+	}
+	return nil
+}
+
+func collectUsedNames(fnBody *ast.BlockStmt) map[string]bool {
+	names := map[string]bool{}
+	ast.Inspect(fnBody, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok {
+			names[id.Name] = true
+		}
+		return true
+	})
+	return names
+}
+
+// pickFreshName returns a name that doesn't collide with anything already
+// referenced in the function body. It tries a type-derived name first
+// (e.g. *tdm.TdmService → tdmService) and falls back to numeric suffixes.
+func pickFreshName(original string, obj types.Object, used map[string]bool) string {
+	tryName := func(n string) bool {
+		if n == "" || n == original || used[n] {
+			return false
+		}
+		return types.Universe.Lookup(n) == nil
+	}
+	if obj != nil {
+		if base := baseTypeName(obj.Type()); tryName(base) {
+			return base
+		}
+	}
+	for i := 2; i < 1000; i++ {
+		n := original + strconv.Itoa(i)
+		if tryName(n) {
+			return n
+		}
+	}
+	return ""
+}
+
+func baseTypeName(t types.Type) string {
+	for i := 0; i < 16 && t != nil; i++ {
+		switch x := t.(type) {
+		case *types.Pointer:
+			t = x.Elem()
+		case *types.Named:
+			n := x.Obj().Name()
+			if n == "" {
+				return ""
+			}
+			r := []rune(n)
+			r[0] = unicode.ToLower(r[0])
+			return string(r)
+		default:
+			return ""
+		}
+	}
+	return ""
+}
+
+// hoistWouldShadow reports whether introducing `var name ...` at the top of
+// fnBody would change the meaning of an existing reference. Hoisting moves a
+// binding from the inner :=' scope (effective after the assignment) to the
+// outer function-body scope (effective from the very start of the body), so
+// any reference to `name` that originally resolved to a parameter, import,
+// or other outer-scope binding would now resolve to the new variable.
+func hoistWouldShadow(pass *analysis.Pass, fnBody *ast.BlockStmt, name string, ownObjs map[types.Object]bool) bool {
+	if pass.TypesInfo == nil {
+		return true
+	}
+
+	skipSel := map[*ast.Ident]bool{}
+	ast.Inspect(fnBody, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel != nil {
+			skipSel[sel.Sel] = true
+		}
+		return true
+	})
+
+	var shadow bool
+	ast.Inspect(fnBody, func(n ast.Node) bool {
+		if shadow {
+			return false
+		}
+		id, ok := n.(*ast.Ident)
+		if !ok || id.Name != name || skipSel[id] {
+			return true
+		}
+		obj := pass.TypesInfo.Uses[id]
+		if obj == nil {
+			return true
+		}
+		if ownObjs[obj] {
+			return true
+		}
+		if v, ok := obj.(*types.Var); ok && v.IsField() {
+			return true
+		}
+		if obj.Pos() < fnBody.Pos() || obj.Pos() >= fnBody.End() {
+			shadow = true
+			return false
+		}
+		return true
+	})
+	return shadow
 }
 
 func computeDeclEdit(pass *analysis.Pass, imports map[string]string, candidates []candidate, idxs []int) (declEdit, bool) {
@@ -226,7 +411,11 @@ func computeDeclEdit(pass *analysis.Pass, imports map[string]string, candidates 
 			if id.Name == "_" {
 				continue
 			}
-			if seen[id.Name] {
+			name := id.Name
+			if r, ok := c.renames[name]; ok {
+				name = r
+			}
+			if seen[name] {
 				continue
 			}
 			obj := pass.TypesInfo.Defs[id]
@@ -237,8 +426,8 @@ func computeDeclEdit(pass *analysis.Pass, imports map[string]string, candidates 
 			if missing {
 				return declEdit{}, false
 			}
-			seen[id.Name] = true
-			newCollected = append(newCollected, entry{name: id.Name, typ: typeStr})
+			seen[name] = true
+			newCollected = append(newCollected, entry{name: name, typ: typeStr})
 		}
 	}
 
@@ -373,7 +562,25 @@ func buildHoistFix(pass *analysis.Pass, c candidate, edit declEdit, includeVarBl
 	if startOff < 0 || endOff > len(src) || tokOff+2 > endOff || tokOff < startOff {
 		return analysis.SuggestedFix{}, false
 	}
-	lhsText := src[startOff:tokOff]
+
+	var lhsText []byte
+	if len(c.renames) == 0 {
+		lhsText = src[startOff:tokOff]
+	} else {
+		parts := make([]string, 0, len(c.assign.Lhs))
+		for _, e := range c.assign.Lhs {
+			id, ok := e.(*ast.Ident)
+			if !ok {
+				return analysis.SuggestedFix{}, false
+			}
+			n := id.Name
+			if r, ok := c.renames[n]; ok {
+				n = r
+			}
+			parts = append(parts, n)
+		}
+		lhsText = []byte(strings.Join(parts, ", ") + " ")
+	}
 	rhsText := src[tokOff+2 : endOff]
 
 	insert := make([]byte, 0, len(lhsText)+1+len(rhsText)+2)
@@ -382,7 +589,7 @@ func buildHoistFix(pass *analysis.Pass, c candidate, edit declEdit, includeVarBl
 	insert = append(insert, rhsText...)
 	insert = append(insert, []byte("; ")...)
 
-	edits := make([]analysis.TextEdit, 0, 4)
+	edits := make([]analysis.TextEdit, 0, 8)
 	if includeVarBlock && edit.text != "" {
 		edits = append(edits, analysis.TextEdit{
 			Pos:     edit.pos,
@@ -395,6 +602,38 @@ func buildHoistFix(pass *analysis.Pass, c candidate, edit declEdit, includeVarBl
 		analysis.TextEdit{Pos: c.ifStmt.Cond.Pos(), End: c.ifStmt.Cond.Pos(), NewText: insert},
 		analysis.TextEdit{Pos: c.ifStmt.End(), End: c.ifStmt.End(), NewText: []byte("\n")},
 	)
+
+	if len(c.renames) > 0 && pass.TypesInfo != nil {
+		renameByObj := map[types.Object]string{}
+		for orig, newName := range c.renames {
+			if obj := lhsObj(pass, c.assign, orig); obj != nil {
+				renameByObj[obj] = newName
+			}
+		}
+		assignStart := c.assign.Pos()
+		assignEnd := c.assign.End()
+		ast.Inspect(c.fnBody, func(n ast.Node) bool {
+			id, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if id.Pos() >= assignStart && id.End() <= assignEnd {
+				return true
+			}
+			obj := pass.TypesInfo.Uses[id]
+			if obj == nil {
+				return true
+			}
+			if newName, ok := renameByObj[obj]; ok {
+				edits = append(edits, analysis.TextEdit{
+					Pos:     id.Pos(),
+					End:     id.End(),
+					NewText: []byte(newName),
+				})
+			}
+			return true
+		})
+	}
 
 	return analysis.SuggestedFix{
 		Message:   "hoist to var declarations and inline assignment",
