@@ -3,4 +3,5 @@ name: custom-gcl
 destination: ./bin
 plugins:
   - module: github.com/justtrackio/go-linters
+    # Build the plugin from this local checkout, including uncommitted changes.
     path: .

@@ -1,0 +1,36 @@
+package missingimport
+
+import (
+	"testlintdata/iferrinline/widget"
+	time2 "time"
+)
+
+func Capacity() (int, error) {
+	var err error
+	var value time2.Duration
+	var count int
+
+	time := 1
+	if value, err = widget.Duration(); err != nil {
+		return 0, err
+	}
+
+	if count, err = convert(int(value)); err != nil {
+		return 0, err
+	}
+
+	return count + time, nil
+}
+
+func convert(value int) (int, error) { return value, nil }
+
+func Other() (int, error) {
+	var err error
+	var value time2.Duration
+
+	if value, err = widget.Duration(); err != nil {
+		return 0, err
+	}
+
+	return int(value), nil
+}

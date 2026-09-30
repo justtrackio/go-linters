@@ -1,0 +1,19 @@
+package missingimport
+
+import (
+	"fmt" // Keep this comment.
+	time "time"
+
+	"testlintdata/iferrinline/widget"
+)
+
+func Grouped() (string, error) {
+	var err error
+	var value time.Duration
+
+	if value, err = widget.Duration(); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprint(value), nil
+}

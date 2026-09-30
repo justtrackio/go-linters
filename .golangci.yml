@@ -3,9 +3,14 @@ version: "2"
 linters:
   default: none
   enable:
+    - noanonstruct # Requires named non-empty structs outside test files.
     - iferrinline
   settings:
     custom:
+      noanonstruct:
+        type: module
+        description: reports non-empty anonymous structs outside test files
+        original-url: github.com/justtrackio/go-linters
       iferrinline:
         type: module
         description: reports err assignments followed by `if err != nil` that can be inlined

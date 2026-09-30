@@ -20,7 +20,7 @@ func TestIfErrInline(t *testing.T) {
 	analyzers, err := plugin.BuildAnalyzers()
 	require.NoError(t, err)
 
-	analysistest.RunWithSuggestedFixes(t, testdataDir(t), analyzers[0], "testlintdata/iferrinline")
+	analysistest.RunWithSuggestedFixes(t, testdataDir(t), analyzers[0], "testlintdata/iferrinline", "testlintdata/missingimport")
 }
 
 func testdataDir(t *testing.T) string {

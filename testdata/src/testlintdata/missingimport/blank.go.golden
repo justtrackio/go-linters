@@ -1,0 +1,17 @@
+package missingimport
+
+import (
+ time "time"
+ "testlintdata/iferrinline/widget"
+)
+
+func Blank() (int, error) {
+ var err error
+ var value time.Duration
+
+ if value, err = widget.Duration(); err != nil {
+  return 0, err
+ }
+
+ return int(value), nil
+}

@@ -1,6 +1,6 @@
 # go-linters
 
-Custom golangci-lint plugin module containing the `iferrinline` analyzer.
+Custom golangci-lint plugin module containing the `iferrinline` and `noanonstruct` analyzers.
 
 `iferrinline` flags the pattern
 
@@ -49,9 +49,8 @@ iferrinline -fix ./...
 
 The hoist case is also autofixed: the analyzer uses type info to emit one
 `var <name> <type>` per hoisted variable at the top of the enclosing
-function and switches the assignment to `=`. It bails on the autofix
-(diagnostic-only) if any hoisted variable's type references a package that
-isn't imported in the current file. Same-line trailing comments on the
+function and switches the assignment to `=`. It adds imports when a hoisted variable's type references a package that
+isn't imported in the current file, choosing an alias that avoids name collisions. Same-line trailing comments on the
 assignment are dropped by the rewrite.
 
 ## Develop
@@ -109,9 +108,33 @@ template.
 
 ## Adding more analyzers
 
-In `plugin.go`:
+In `ifferrinline.go`:
 
 - Register additional plugins with `register.Plugin("name", New)` in `init()`,
   each with its own `New` constructor — or
 - Return multiple `*analysis.Analyzer` from `BuildAnalyzers()` under a single
   plugin name.
+
+## noanonstruct
+
+Requires a declared type name for non-empty structs in production Go files.
+Checks literals, variable declarations, function signatures, and nested types.
+Empty structs (`struct{}`) and all structs in `_test.go` files are allowed.
+Direct struct type declarations (including aliases) are allowed; anonymous
+structs nested inside them are still reported. No automatic fix is offered,
+since naming and placing the new type requires a design decision.
+
+Enable it in the target project's golangci-lint v2 configuration after rebuilding
+the custom binary with `golangci-lint custom -v`:
+
+```yaml
+linters:
+  enable:
+    - noanonstruct
+  settings:
+    custom:
+      noanonstruct:
+        type: module
+        description: reports non-empty anonymous structs outside test files
+        original-url: github.com/justtrackio/go-linters
+```

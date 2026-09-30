@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,13 +18,13 @@ func init() {
 	register.Plugin("iferrinline", New)
 }
 
-type Plugin struct{}
+type IfErrInline struct{}
 
 func New(_ any) (register.LinterPlugin, error) {
-	return &Plugin{}, nil
+	return &IfErrInline{}, nil
 }
 
-func (p *Plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
+func (p *IfErrInline) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	return []*analysis.Analyzer{
 		{
 			Name: "iferrinline",
@@ -33,7 +34,7 @@ func (p *Plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	}, nil
 }
 
-func (p *Plugin) GetLoadMode() string {
+func (p *IfErrInline) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }
 
@@ -50,9 +51,11 @@ type declEdit struct {
 	text     string
 }
 
-func (p *Plugin) run(pass *analysis.Pass) (any, error) {
+func (p *IfErrInline) run(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
 		imports := buildImportMap(file)
+		originalImports := maps.Clone(imports)
+		usedImportNames := collectUsedNamesInFile(file)
 
 		var candidates []candidate
 		ast.Inspect(file, func(n ast.Node) bool {
@@ -77,13 +80,19 @@ func (p *Plugin) run(pass *analysis.Pass) (any, error) {
 
 		declEditByFn := map[*ast.BlockStmt]declEdit{}
 		declOkByFn := map[*ast.BlockStmt]bool{}
-		for fnBody, idxs := range hoistByFn {
-			if edit, ok := computeDeclEdit(pass, file, imports, candidates, idxs); ok {
+		for _, c := range candidates {
+			fnBody := c.fnBody
+			if fnBody == nil || declOkByFn[fnBody] {
+				continue
+			}
+			idxs := hoistByFn[fnBody]
+			if edit, ok := computeDeclEdit(pass, file, imports, usedImportNames, candidates, idxs); ok {
 				declEditByFn[fnBody] = edit
 				declOkByFn[fnBody] = true
 			}
 		}
 
+		importEdits := buildImportEdits(file, originalImports, imports)
 		varBlockEmitted := map[*ast.BlockStmt]bool{}
 		for _, c := range candidates {
 			msg := "if err can be inlined into the assignment"
@@ -114,6 +123,8 @@ func (p *Plugin) run(pass *analysis.Pass) (any, error) {
 				edit := declEditByFn[c.fnBody]
 				includeVarBlock := edit.text != "" && !varBlockEmitted[c.fnBody]
 				if fix, ok := buildHoistFix(pass, c, edit, includeVarBlock); ok {
+					fix.TextEdits = append(fix.TextEdits, importEdits...)
+					importEdits = nil
 					diag.SuggestedFixes = []analysis.SuggestedFix{fix}
 					if includeVarBlock {
 						varBlockEmitted[c.fnBody] = true
@@ -362,7 +373,7 @@ func hoistWouldShadow(pass *analysis.Pass, fnBody *ast.BlockStmt, name string, o
 	return shadow
 }
 
-func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]string, candidates []candidate, idxs []int) (declEdit, bool) {
+func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]string, usedImportNames map[string]bool, candidates []candidate, idxs []int) (declEdit, bool) {
 	if pass.TypesInfo == nil {
 		return declEdit{}, false
 	}
@@ -381,7 +392,6 @@ func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]str
 	var (
 		seen         = map[string]bool{}
 		newCollected []entry
-		missing      bool
 	)
 	for name := range allNames {
 		seen[name] = true
@@ -394,11 +404,18 @@ func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]str
 			return ""
 		}
 		alias, ok := imports[p.Path()]
-		if !ok {
-			missing = true
-			return p.Name()
+		if !ok || alias == "_" {
+			alias = p.Name()
+			for suffix := 2; usedImportNames[alias] || types.Universe.Lookup(alias) != nil; suffix++ {
+				alias = p.Name() + strconv.Itoa(suffix)
+			}
+			usedImportNames[alias] = true
+			imports[p.Path()] = alias
 		}
-		if alias == "" || alias == "." {
+		if alias == "." {
+			return ""
+		}
+		if alias == "" {
 			return p.Name()
 		}
 		return alias
@@ -426,9 +443,6 @@ func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]str
 				continue
 			}
 			typeStr := types.TypeString(obj.Type(), qualPkgs)
-			if missing {
-				return declEdit{}, false
-			}
 			seen[name] = true
 			newCollected = append(newCollected, entry{name: name, typ: typeStr})
 		}
@@ -453,9 +467,6 @@ func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]str
 					continue
 				}
 				typeStr := types.TypeString(obj.Type(), qualPkgs)
-				if missing {
-					return declEdit{}, false
-				}
 				existingCollected = append(existingCollected, entry{name: n.Name, typ: typeStr})
 			}
 		}
@@ -780,4 +791,77 @@ func usedAfter(stmts []ast.Stmt, name string) bool {
 		}
 	}
 	return false
+}
+
+// Reserve identifiers throughout the file so new package qualifiers cannot
+// shadow existing bindings or be shadowed at a generated declaration.
+func collectUsedNamesInFile(file *ast.File) map[string]bool {
+	names := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok {
+			names[id.Name] = true
+		}
+		return true
+	})
+	return names
+}
+
+func buildImportEdits(file *ast.File, original, updated map[string]string) []analysis.TextEdit {
+	var edits []analysis.TextEdit
+	var paths []string
+	for path, alias := range updated {
+		old, exists := original[path]
+		if !exists {
+			paths = append(paths, path)
+			continue
+		}
+		if old == "_" && alias != old {
+			for _, imp := range file.Imports {
+				if imp.Path.Value == strconv.Quote(path) {
+					edits = append(edits, analysis.TextEdit{Pos: imp.Name.Pos(), End: imp.Name.End(), NewText: []byte(alias)})
+				}
+			}
+		}
+	}
+	sort.Strings(paths)
+	if len(paths) > 0 {
+		var additions strings.Builder
+		for _, path := range paths {
+			additions.WriteString("\n" + updated[path] + " " + strconv.Quote(path))
+		}
+		additions.WriteString("\n")
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.IMPORT {
+				continue
+			}
+			// Keep cgo's import and its preamble together in their own declaration.
+			cgo := false
+			for _, spec := range gen.Specs {
+				if spec.(*ast.ImportSpec).Path.Value == strconv.Quote("C") {
+					cgo = true
+				}
+			}
+			if cgo {
+				continue
+			}
+			if gen.Lparen.IsValid() {
+				pos := gen.Lparen + 1
+				edits = append(edits, analysis.TextEdit{Pos: pos, End: pos, NewText: []byte(strings.TrimSuffix(additions.String(), "\n"))})
+			} else {
+				spec := gen.Specs[0].(*ast.ImportSpec)
+				end := spec.End()
+				if spec.Comment != nil {
+					end = spec.Comment.End()
+				}
+				edits = append(edits,
+					analysis.TextEdit{Pos: spec.Pos(), End: spec.Pos(), NewText: []byte("(" + additions.String())},
+					analysis.TextEdit{Pos: end, End: end, NewText: []byte("\n)")},
+				)
+			}
+			return edits
+		}
+		edits = append(edits, analysis.TextEdit{Pos: file.Name.End(), End: file.Name.End(), NewText: []byte("\n\nimport (" + additions.String() + ")")})
+	}
+	return edits
 }
