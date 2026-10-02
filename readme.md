@@ -1,6 +1,6 @@
 # go-linters
 
-Custom golangci-lint bundle containing the `iferrinline` and `noanonstruct` analyzers.
+Custom golangci-lint bundle containing the `iferrinline`, `okinline`, `noanonstruct`, and `funcmethod` analyzers.
 
 ## Install with mise
 
@@ -44,7 +44,7 @@ linters:
 
 The `justtrack` plugin runs every analyzer in the bundle.
 Repositories configure it once, including when later releases add rules.
-The individual `iferrinline` and `noanonstruct` plugins remain available for selective use.
+The individual `iferrinline`, `okinline`, `noanonstruct`, and `funcmethod` plugins remain available for selective use.
 Enable either the aggregate or individual plugins, not both.
 
 Existing lint commands remain unchanged when mise is activated or its shims are on `PATH`.
@@ -196,3 +196,131 @@ since naming and placing the new type requires a design decision.
 
 The `justtrack` plugin enables this rule automatically.
 For selective use, configure the individual `noanonstruct` module plugin instead.
+
+## funcmethod
+
+Reports private package functions whose production callers belong to one receiver
+type, even when the function does not access receiver fields:
+
+```go
+func (s *SetupSchemaService) updateTable() {
+    buildSchemaUpdate()
+}
+
+func buildSchemaUpdate() {} // make it a method of SetupSchemaService
+```
+
+The intended refactor is:
+
+```go
+func (s *SetupSchemaService) updateTable() {
+    s.buildSchemaUpdate()
+}
+
+func (s *SetupSchemaService) buildSchemaUpdate() {}
+```
+
+Ownership follows direct calls through private helper chains across the whole
+package, including recursive groups and calls inside closures, `go`, and `defer`.
+Pointer and value receivers of the same type share ownership, as do generic
+instantiations and receiver aliases. A helper shared by multiple receiver types
+is allowed.
+
+Test files do not establish ownership and receive no diagnostics. Ownership is
+inferred from methods and production entry points (exported functions, `init`,
+`main`, package initializers, and escaped function values). Private helpers
+unreachable from these entry points, such as a `planSchemaUpdate` called only
+from tests, do not prevent their callees from belonging to a production receiver
+type. This works whether or not tests are loaded.
+
+The rule conservatively skips exported functions, unused functions, function
+values passed around as callbacks, functions reached from package initializers
+or unrestricted package functions, generic functions with their own type
+parameters, and names that collide with receiver fields or methods. Generated
+declarations receive no diagnostics, but their calls still count. It analyzes
+the files selected by the current build tags and platform.
+
+No automatic fix is offered: converting helper chains requires adding receivers
+and updating calls, including tests, while choosing pointer or value receivers.
+
+Enable it in the target project's golangci-lint v2 configuration after rebuilding
+the custom binary with `golangci-lint custom -v`:
+
+```yaml
+linters:
+  enable:
+    - funcmethod
+  settings:
+    custom:
+      funcmethod:
+        type: module
+        description: reports private functions used only by a single receiver type that should be methods
+        original-url: github.com/justtrackio/go-linters
+```
+
+For standalone use, build from the `linters` directory and run in the target module:
+
+```sh
+go build -o /tmp/funcmethod ./cmd/funcmethod
+cd /path/to/target/module
+/tmp/funcmethod ./...
+```
+
+## okinline
+
+Reports assignments to `ok` immediately followed by `if !ok` or `if ok`,
+including function calls, map lookups, type assertions, and channel receives.
+It shares scope preservation and autofix behavior with `iferrinline`.
+
+When the assigned variables are only used inside the `if`, it keeps `:=`:
+
+```go
+event, ok := NormalizeDenormalizeEventType(s.events, eventType)
+if !ok {
+    return SetupTableStatus{}, newBadRequestError("eventType is not configured")
+}
+// ↓
+if event, ok := NormalizeDenormalizeEventType(s.events, eventType); !ok {
+    return SetupTableStatus{}, newBadRequestError("eventType is not configured")
+}
+```
+
+When `event` is used afterward, it declares `event` and `ok` at the top of the
+function and uses `=` so the value remains available:
+
+```go
+var ok bool
+var event EventType
+// ...
+if event, ok = NormalizeDenormalizeEventType(s.events, eventType); !ok {
+    return SetupTableStatus{}, newBadRequestError("eventType is not configured")
+}
+use(event)
+```
+
+Existing `=` assignments can also be inlined. Like `iferrinline`, it skips
+multiline assignments and checks that already have an initializer. A `:=`
+assignment whose `ok` is used afterward without a companion to hoist is left
+alone.
+
+Enable it after rebuilding the custom binary with `golangci-lint custom -v`:
+
+```yaml
+linters:
+  enable:
+    - okinline
+  settings:
+    custom:
+      okinline:
+        type: module
+        description: reports ok assignments followed by `if !ok` or `if ok` that can be inlined
+        original-url: github.com/justtrackio/go-linters
+```
+
+For standalone use, install from the `linters` directory and run in the target module:
+
+```sh
+go install ./cmd/okinline
+cd /path/to/target/module
+okinline -fix ./...
+```

@@ -1,0 +1,44 @@
+package linters
+
+import (
+	"go/ast"
+	"go/token"
+
+	"github.com/golangci/plugin-module-register/register"
+	"golang.org/x/tools/go/analysis"
+)
+
+func init() {
+	register.Plugin("okinline", NewOkInline)
+}
+
+type OkInline struct{}
+
+func NewOkInline(_ any) (register.LinterPlugin, error) {
+	return &OkInline{}, nil
+}
+
+func (p *OkInline) BuildAnalyzers() ([]*analysis.Analyzer, error) {
+	return []*analysis.Analyzer{{
+		Name: "okinline",
+		Doc:  "reports ok assignments followed by `if !ok` or `if ok` that can be inlined into the if initializer",
+		Run:  p.run,
+	}}, nil
+}
+
+func (p *OkInline) GetLoadMode() string {
+	return register.LoadModeTypesInfo
+}
+
+func (p *OkInline) run(pass *analysis.Pass) (any, error) {
+	return runInlineCheck(pass, "okinline", "ok", isOkCondition)
+}
+
+func isOkCondition(expr ast.Expr) bool {
+	expr = ast.Unparen(expr)
+	if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.NOT {
+		expr = ast.Unparen(unary.X)
+	}
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == "ok"
+}

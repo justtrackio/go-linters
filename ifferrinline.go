@@ -28,7 +28,7 @@ func (p *IfErrInline) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	return []*analysis.Analyzer{
 		{
 			Name: "iferrinline",
-			Doc:  "reports err assignments followed by `if err != nil` that can be inlined as `if err := ...; err != nil`",
+			Doc:  "reports err assignments followed by `if err != nil` that can be inlined into the if initializer",
 			Run:  p.run,
 		},
 	}, nil
@@ -52,6 +52,12 @@ type declEdit struct {
 }
 
 func (p *IfErrInline) run(pass *analysis.Pass) (any, error) {
+	return runInlineCheck(pass, "iferrinline", "err", isErrNotNil)
+}
+
+// runInlineCheck shares scope preservation and suggested fixes between the
+// error and boolean check analyzers.
+func runInlineCheck(pass *analysis.Pass, analyzerName, checkName string, matchesCondition func(ast.Expr) bool) (any, error) {
 	for _, file := range pass.Files {
 		imports := buildImportMap(file)
 		originalImports := maps.Clone(imports)
@@ -64,7 +70,7 @@ func (p *IfErrInline) run(pass *analysis.Pass) (any, error) {
 				return true
 			}
 			for i := 0; i < len(block.List)-1; i++ {
-				if c, ok := matchPattern(pass, file, block, i); ok {
+				if c, ok := matchPattern(pass, file, block, i, checkName, matchesCondition); ok {
 					candidates = append(candidates, c)
 				}
 			}
@@ -95,7 +101,7 @@ func (p *IfErrInline) run(pass *analysis.Pass) (any, error) {
 		importEdits := buildImportEdits(file, originalImports, imports)
 		varBlockEmitted := map[*ast.BlockStmt]bool{}
 		for _, c := range candidates {
-			msg := "if err can be inlined into the assignment"
+			msg := "if " + checkName + " can be inlined into the assignment"
 			if len(c.hoistNames) > 0 {
 				hoistDisplay := make([]string, len(c.hoistNames))
 				for i, name := range c.hoistNames {
@@ -105,13 +111,13 @@ func (p *IfErrInline) run(pass *analysis.Pass) (any, error) {
 						hoistDisplay[i] = name
 					}
 				}
-				msg = "if err can be inlined by hoisting " + strings.Join(hoistDisplay, ", ") +
+				msg = "if " + checkName + " can be inlined by hoisting " + strings.Join(hoistDisplay, ", ") +
 					" to var declarations at the top of the function and changing := to ="
 			}
 			diag := analysis.Diagnostic{
 				Pos:      c.assign.Pos(),
 				End:      c.ifStmt.End(),
-				Category: "iferrinline",
+				Category: analyzerName,
 				Message:  msg,
 			}
 
@@ -137,11 +143,11 @@ func (p *IfErrInline) run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i int) (candidate, bool) {
+func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i int, checkName string, matchesCondition func(ast.Expr) bool) (candidate, bool) {
 	var zero candidate
 
 	assign, ok := block.List[i].(*ast.AssignStmt)
-	if !ok || assign.Tok != token.DEFINE {
+	if !ok || (assign.Tok != token.DEFINE && assign.Tok != token.ASSIGN) {
 		return zero, false
 	}
 	if len(assign.Rhs) != 1 || len(assign.Lhs) == 0 {
@@ -149,7 +155,7 @@ func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i i
 	}
 
 	var (
-		hasErr     bool
+		hasCheck   bool
 		companions []string
 	)
 	for _, e := range assign.Lhs {
@@ -158,14 +164,14 @@ func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i i
 			return zero, false
 		}
 		switch id.Name {
-		case "err":
-			hasErr = true
+		case checkName:
+			hasCheck = true
 		case "_":
 		default:
 			companions = append(companions, id.Name)
 		}
 	}
-	if !hasErr {
+	if !hasCheck {
 		return zero, false
 	}
 	if pass.Fset.Position(assign.Pos()).Line != pass.Fset.Position(assign.End()).Line {
@@ -176,8 +182,14 @@ func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i i
 	if !ok || ifStmt.Init != nil {
 		return zero, false
 	}
-	if !isErrNotNil(ifStmt.Cond) {
+	if !matchesCondition(ifStmt.Cond) {
 		return zero, false
+	}
+
+	// Plain assignments keep the existing bindings, so inlining does not
+	// restrict their scope even when the checked variable or companions are used afterward.
+	if assign.Tok == token.ASSIGN {
+		return candidate{assign: assign, ifStmt: ifStmt}, true
 	}
 
 	rest := block.List[i+2:]
@@ -187,7 +199,7 @@ func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i i
 			hoist = append(hoist, name)
 		}
 	}
-	if len(hoist) == 0 && usedAfter(rest, "err") {
+	if len(hoist) == 0 && usedAfter(rest, checkName) {
 		return zero, false
 	}
 

@@ -204,3 +204,33 @@ func ParamErrNestedBlock(err error) error {
 	}
 	return err
 }
+
+func AssignErrUsedAfter() error {
+	var err error
+	err = boom() // want "if err can be inlined into the assignment"
+	if err != nil {
+		return err
+	}
+	return err
+}
+
+func four() (int, bool, string, error) { return 0, false, "", nil }
+
+func AssignMultiBlankUsedAfter() error {
+	var status int
+	var err error
+	status, _, _, err = four() // want "if err can be inlined into the assignment"
+	if err != nil {
+		return wrap(err)
+	}
+	use(status)
+	return err
+}
+
+func AssignNamedReturn() (status int, err error) {
+	status, err = bar() // want "if err can be inlined into the assignment"
+	if err != nil {
+		return
+	}
+	return
+}
