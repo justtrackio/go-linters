@@ -1,0 +1,16 @@
+[tools]
+go = "1.27.0"
+golangci-lint = "2.12.2"
+jq = "1.8.1"
+
+[tasks.bundle]
+description = "Build golangci-lint with the local go-linters plugins"
+run = "golangci-lint custom"
+
+[tasks.test]
+description = "Run the Go test suite"
+run = "go test ./..."
+
+[tasks.smoke]
+description = "Smoke-test the custom bundle against analyzer findings and clean fixtures"
+run = "scripts/smoke-bundle.sh ./bin/golangci-lint"

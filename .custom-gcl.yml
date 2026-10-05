@@ -1,5 +1,5 @@
 version: v2.12.2
-name: custom-gcl
+name: golangci-lint
 destination: ./bin
 plugins:
   - module: github.com/justtrackio/go-linters

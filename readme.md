@@ -1,6 +1,66 @@
 # go-linters
 
-Custom golangci-lint plugin module containing the `iferrinline` and `noanonstruct` analyzers.
+Custom golangci-lint bundle containing the `iferrinline` and `noanonstruct` analyzers.
+
+## Install with mise
+
+Tagged releases include binaries for Linux and macOS on AMD64 and ARM64.
+Each archive contains an executable named `golangci-lint`.
+
+Change the provider for the existing tool in the target repository's `mise.toml`:
+
+```toml
+[tool_alias.golangci-lint]
+backend = "github:justtrackio/go-linters"
+
+[tools]
+golangci-lint = "latest"
+```
+
+The version selects a **go-linters release**, not an upstream golangci-lint release.
+Replace any existing upstream version pin with `latest` or an exact bundle release version.
+At least one bundle release with binary assets must exist before installation works.
+
+```sh
+mise install
+```
+
+Installing the bundle does not enable its rules.
+Merge this configuration into the target repository's `.golangci.yml`.
+Keep its existing standard linters and settings.
+
+```yaml
+version: "2"
+
+linters:
+  enable:
+    - justtrack
+  settings:
+    custom:
+      justtrack:
+        type: module
+        description: runs the justtrack company rules
+        original-url: github.com/justtrackio/go-linters
+```
+
+The `justtrack` plugin runs every analyzer in the bundle.
+Repositories configure it once, including when later releases add rules.
+The individual `iferrinline` and `noanonstruct` plugins remain available for selective use.
+Enable either the aggregate or individual plugins, not both.
+
+Existing lint commands remain unchanged when mise is activated or its shims are on `PATH`.
+For an isolated shell, load the repository's tooling explicitly:
+
+```sh
+mise exec -- golangci-lint run --build-tags integration,fixtures ./...
+```
+
+`latest` does not continuously update installed tools.
+Refresh it with `mise upgrade golangci-lint`, or add that command to the shared lint task.
+A committed `mise.lock` can retain an older version.
+New releases can introduce lint failures on unchanged branches.
+
+## iferrinline
 
 `iferrinline` flags the pattern
 
@@ -85,35 +145,50 @@ Exits non-zero (3) when any diagnostic is reported — that's the convention
 from `go/analysis`. After editing the rule, re-run `go install ./cmd/iferrinline`
 to refresh the installed binary.
 
-## Build the custom golangci-lint binary
-
-Requires `golangci-lint` >= v2 installed on `$PATH`. The version in
-`.custom-gcl.yml` pins the golangci-lint version baked into the custom binary.
+## Build and check the bundle
 
 ```sh
-golangci-lint custom -v
+mise install
+mise run test
+mise run bundle
+mise run smoke
 ```
 
-The binary is written to `./bin/custom-gcl`.
+`.custom-gcl.yml` pins the embedded golangci-lint version and imports this local checkout.
+The custom binary is written to `./bin/golangci-lint`.
+The smoke test checks both analyzers against invalid and corrected Go fixtures.
 
-## Run it
+Run the custom binary from the project that you want to lint:
 
 ```sh
-./bin/custom-gcl run ./...
+/path/to/go-linters/bin/golangci-lint run ./...
 ```
 
-It reads `.golangci.yml` from the project being linted. The plugin is enabled
-under `linters.settings.custom.iferrinline` — see `.golangci.yml` here for a
-template.
+It reads that project's `.golangci.yml`, including the `justtrack` configuration shown above.
 
 ## Adding more analyzers
 
-In `ifferrinline.go`:
+Add the analyzer and its behavior tests.
+Include it in `JustTrackPlugin.BuildAnalyzers` in `justtrack.go`.
+The aggregate uses the type-information load mode required by `iferrinline`.
+Run the test, bundle, and smoke tasks before release.
 
-- Register additional plugins with `register.Plugin("name", New)` in `init()`,
-  each with its own `New` constructor — or
-- Return multiple `*analysis.Analyzer` from `BuildAnalyzers()` under a single
-  plugin name.
+Publish a new bundle release to distribute the rule.
+Consumers only update the bundle version or refresh `latest`.
+They do not need new lint commands or custom-linter configuration entries.
+
+## Releases
+
+After merging a release commit, create and push a new `v*` tag.
+The bundle workflow runs tests and builds all four platform archives.
+It smoke-tests the native Linux AMD64 binary before publication.
+The release job uploads the archives and `SHA256SUMS` to GitHub.
+Pull requests and main-branch pushes build archives without publishing releases.
+
+The bundle release version and embedded golangci-lint version are separate.
+Keep the builder pin in `mise.toml`, the version in `.custom-gcl.yml`,
+and the upstream license URL in the workflow aligned when upgrading golangci-lint.
+Each archive includes the upstream runner's GPLv3 license as `LICENSE.golangci-lint`.
 
 ## noanonstruct
 
@@ -124,17 +199,5 @@ Direct struct type declarations (including aliases) are allowed; anonymous
 structs nested inside them are still reported. No automatic fix is offered,
 since naming and placing the new type requires a design decision.
 
-Enable it in the target project's golangci-lint v2 configuration after rebuilding
-the custom binary with `golangci-lint custom -v`:
-
-```yaml
-linters:
-  enable:
-    - noanonstruct
-  settings:
-    custom:
-      noanonstruct:
-        type: module
-        description: reports non-empty anonymous structs outside test files
-        original-url: github.com/justtrackio/go-linters
-```
+The `justtrack` plugin enables this rule automatically.
+For selective use, configure the individual `noanonstruct` module plugin instead.

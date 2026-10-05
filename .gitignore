@@ -1,5 +1,6 @@
 # Build artifacts from `golangci-lint custom`
 /bin/
+/dist/
 
 # Local build of cmd/iferrinline left at the repo root
 /iferrinline
