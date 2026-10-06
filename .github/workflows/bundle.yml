@@ -46,9 +46,9 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-      - name: Smoke-test native bundle
+      - name: Test native bundle
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
-        run: scripts/smoke-bundle.sh ./bin/golangci-lint
+        run: mise run test-bundle
       - name: Package target
         shell: bash
         env:

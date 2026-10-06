@@ -151,12 +151,14 @@ to refresh the installed binary.
 mise install
 mise run test
 mise run bundle
-mise run smoke
+mise run test-bundle
 ```
 
 `.custom-gcl.yml` pins the embedded golangci-lint version and imports this local checkout.
 The custom binary is written to `./bin/golangci-lint`.
-The smoke test checks both analyzers against invalid and corrected Go fixtures.
+Analyzer tests use `analysistest` with checked-in Go fixtures and expected fix outputs.
+The Go bundle integration test reuses these fixtures to check diagnostics and real `--fix` behavior.
+It compares formatted golden files, compiles corrected packages, and verifies that they lint cleanly.
 
 Run the custom binary from the project that you want to lint:
 
@@ -168,20 +170,14 @@ It reads that project's `.golangci.yml`, including the `justtrack` configuration
 
 ## Adding more analyzers
 
-Add the analyzer and its behavior tests.
-Include it in `JustTrackPlugin.BuildAnalyzers` in `justtrack.go`.
-The aggregate uses the type-information load mode required by `iferrinline`.
-Run the test, bundle, and smoke tasks before release.
-
-Publish a new bundle release to distribute the rule.
-Consumers only update the bundle version or refresh `latest`.
-They do not need new lint commands or custom-linter configuration entries.
+See [Add a linter](docs/adding-linters.md) for implementation, fixtures, autofix tests, and release steps.
+The bundle test discovers existing golden files without additional per-rule examples.
 
 ## Releases
 
 After merging a release commit, create and push a new `v*` tag.
 The bundle workflow runs tests and builds all four platform archives.
-It smoke-tests the native Linux AMD64 binary before publication.
+It runs the Go bundle integration test on the native Linux AMD64 binary before publication.
 The release job uploads the archives and `SHA256SUMS` to GitHub.
 Pull requests and main-branch pushes build archives without publishing releases.
 
