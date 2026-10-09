@@ -146,6 +146,9 @@ to refresh the installed binary.
 
 ## Build and check the bundle
 
+The root `mise.toml` selects the published `github:justtrackio/go-linters` release for normal local linting.
+The bundle task deliberately uses the upstream Aqua runner instead, so a released bundle is never used to rebuild itself:
+
 ```sh
 mise install
 mise run test
@@ -153,7 +156,8 @@ mise run bundle
 mise run test-bundle
 ```
 
-`.custom-gcl.yml` pins the embedded golangci-lint version and imports this local checkout.
+`mise run bundle` explicitly executes `mise exec aqua:golangci/golangci-lint@2.13.1 -- golangci-lint custom`.
+`.custom-gcl.yml` pins the upstream version and imports this local checkout.
 The custom binary is written to `./bin/golangci-lint`.
 Analyzer tests use `analysistest` with checked-in Go fixtures and expected fix outputs.
 The Go bundle integration test reuses these fixtures to check diagnostics and real `--fix` behavior.
@@ -181,7 +185,7 @@ The release job uploads the archives and `SHA256SUMS` to GitHub.
 Pull requests and main-branch pushes build archives without publishing releases.
 
 The bundle release version and embedded golangci-lint version are separate.
-Keep the builder pin in `mise.toml`, the version in `.custom-gcl.yml`,
+Keep the upstream builder pin in the `mise.toml` bundle task, the embedded version in `.custom-gcl.yml`,
 and the upstream license URL in the workflow aligned when upgrading golangci-lint.
 Each archive includes the upstream runner's GPLv3 license as `LICENSE.golangci-lint`.
 
