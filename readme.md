@@ -7,19 +7,18 @@ Custom golangci-lint bundle containing the `iferrinline` and `noanonstruct` anal
 Tagged releases include binaries for Linux and macOS on AMD64 and ARM64.
 Each archive contains an executable named `golangci-lint`.
 
-Change the provider for the existing tool in the target repository's `mise.toml`:
+Select the bundle through its full backend name in the target repository's `mise.toml`:
 
 ```toml
-[tool_alias.golangci-lint]
-backend = "github:justtrackio/go-linters"
-
 [tools]
-golangci-lint = "latest"
+# Disable an inherited upstream golangci-lint tool.
+golangci-lint = []
+"github:justtrackio/go-linters" = "0.3.0"
 ```
 
 The version selects a **go-linters release**, not an upstream golangci-lint release.
-Replace any existing upstream version pin with `latest` or an exact bundle release version.
-At least one bundle release with binary assets must exist before installation works.
+Remove the repository's upstream version pin.
+The full backend name keeps the bundle separate from installed upstream binaries.
 
 ```sh
 mise install
@@ -56,7 +55,7 @@ mise exec -- golangci-lint run --build-tags integration,fixtures ./...
 ```
 
 `latest` does not continuously update installed tools.
-Refresh it with `mise upgrade golangci-lint`, or add that command to the shared lint task.
+Refresh it with `mise upgrade github:justtrackio/go-linters`, or add that command to the shared lint task.
 A committed `mise.lock` can retain an older version.
 New releases can introduce lint failures on unchanged branches.
 
