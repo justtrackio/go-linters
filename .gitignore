@@ -2,9 +2,6 @@
 /bin/
 /dist/
 
-# Local build of cmd/iferrinline left at the repo root
-/iferrinline
-
 # Editor / OS
 .DS_Store
 *.swp

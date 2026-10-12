@@ -1,6 +1,6 @@
 # go-linters
 
-Custom golangci-lint bundle containing the `iferrinline`, `okinline`, `noanonstruct`, and `funcmethod` analyzers.
+Custom golangci-lint bundle containing the `funcmethod`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `recvaftertype` analyzers.
 
 ## Install with mise
 
@@ -44,7 +44,7 @@ linters:
 
 The `justtrack` plugin runs every analyzer in the bundle.
 Repositories configure it once, including when later releases add rules.
-The individual `iferrinline`, `okinline`, `noanonstruct`, and `funcmethod` plugins remain available for selective use.
+The individual plugins remain available for selective use.
 Enable either the aggregate or individual plugins, not both.
 
 Existing lint commands remain unchanged when mise is activated or its shims are on `PATH`.
@@ -59,90 +59,24 @@ Refresh it with `mise upgrade github:justtrackio/go-linters`, or add that comman
 A committed `mise.lock` can retain an older version.
 New releases can introduce lint failures on unchanged branches.
 
-## iferrinline
+## Rules
 
-`iferrinline` flags the pattern
+| Rule | Autofix support |
+| --- | --- |
+| `funcmethod` | No |
+| `iferrinline` | **Yes**, when a safe fix can be generated |
+| `methodfilecheck` | No |
+| `multilineblock` | **Yes** |
+| `noanonstruct` | No |
+| `okinline` | **Yes**, when a safe fix can be generated |
+| `recvaftertype` | No |
 
-```go
-err := foo()
-if err != nil { ... }
-```
-
-when `err` isn't referenced after the `if`, and suggests inlining it as
-
-```go
-if err := foo(); err != nil { ... }
-```
-
-It also handles multi-return assignments. When the other variables are
-unused after the `if`, the suggestion is the same inline form:
-
-```go
-x, err := bar()
-if err != nil { ... }
-// ↓
-if x, err := bar(); err != nil { ... }
-```
-
-When some companion variable (e.g. `x`) is still used after the `if`, the
-diagnostic instead suggests hoisting it to a `var` declaration at the top of
-the enclosing function and switching the assignment to `=`:
-
-```go
-var x SomeType
-// ...
-if x, err = bar(); err != nil { ... }
-use(x)
-```
-
-## Autofix
-
-The analyzer attaches a `SuggestedFix` for the simple-inline case, so
-`golangci-lint run --fix` (or `iferrinline -fix ./...` against the standalone
-binary) rewrites the source in-place. Example:
+Apply supported fixes by running the custom binary with `--fix`:
 
 ```sh
 cd /path/to/some/other/repo
-iferrinline -fix ./...
+/path/to/go-linters/bin/golangci-lint run --fix ./...
 ```
-
-The hoist case is also autofixed: the analyzer uses type info to emit one
-`var <name> <type>` per hoisted variable at the top of the enclosing
-function and switches the assignment to `=`. It adds imports when a hoisted variable's type references a package that
-isn't imported in the current file, choosing an alias that avoids name collisions. Same-line trailing comments on the
-assignment are dropped by the rewrite.
-
-## Develop
-
-```sh
-go mod tidy
-go test ./...
-```
-
-## Run the analyzer standalone
-
-For iteration without building the custom golangci-lint binary, install the
-analyzer as its own binary via `singlechecker.Main`:
-
-```sh
-# from this repo — installs to $(go env GOPATH)/bin
-go install ./cmd/iferrinline
-```
-
-Then run it from inside whatever project you want to lint. `go/packages`
-honors the current directory's `go.mod`, so you must `cd` into the target
-module first — running with an absolute path from elsewhere will fail with
-`directory prefix ... does not contain main module`.
-
-```sh
-cd /path/to/some/other/repo
-iferrinline ./...
-iferrinline ./pkg/orchestrator/...
-```
-
-Exits non-zero (3) when any diagnostic is reported — that's the convention
-from `go/analysis`. After editing the rule, re-run `go install ./cmd/iferrinline`
-to refresh the installed binary.
 
 ## Build and check the bundle
 
@@ -185,19 +119,9 @@ Keep the builder pin in `mise.toml`, the version in `.custom-gcl.yml`,
 and the upstream license URL in the workflow aligned when upgrading golangci-lint.
 Each archive includes the upstream runner's GPLv3 license as `LICENSE.golangci-lint`.
 
-## noanonstruct
-
-Requires a declared type name for non-empty structs in production Go files.
-Checks literals, variable declarations, function signatures, and nested types.
-Empty structs (`struct{}`) and all structs in `_test.go` files are allowed.
-Direct struct type declarations (including aliases) are allowed; anonymous
-structs nested inside them are still reported. No automatic fix is offered,
-since naming and placing the new type requires a design decision.
-
-The `justtrack` plugin enables this rule automatically.
-For selective use, configure the individual `noanonstruct` module plugin instead.
-
 ## funcmethod
+
+**Autofix: No.**
 
 Reports private package functions whose production callers belong to one receiver
 type, even when the function does not access receiver fields:
@@ -258,15 +182,241 @@ linters:
         original-url: github.com/justtrackio/go-linters
 ```
 
-For standalone use, build from the `linters` directory and run in the target module:
+## iferrinline
+
+**Autofix: Yes**, when a safe fix can be generated (see [Autofix](#autofix)).
+
+`iferrinline` flags the pattern
+
+```go
+err := foo()
+if err != nil { ... }
+```
+
+when `err` isn't referenced after the `if`, and suggests inlining it as
+
+```go
+if err := foo(); err != nil { ... }
+```
+
+Error variables are recognized by their type, so names such as `convErr` and
+`listErr` are handled as well. The check must refer to the same variable assigned
+by the preceding statement. Non-error values are skipped, even if named `err`.
+
+It also handles multi-return assignments. When the other variables are
+unused after the `if`, the suggestion is the same inline form:
+
+```go
+x, err := bar()
+if err != nil { ... }
+// ↓
+if x, err := bar(); err != nil { ... }
+```
+
+When some companion variable (e.g. `x`) is still used after the `if`, the
+diagnostic instead suggests hoisting it to a `var` declaration at the top of
+the enclosing function and switching the assignment to `=`:
+
+```go
+var x SomeType
+// ...
+if x, err = bar(); err != nil { ... }
+use(x)
+```
+
+### Autofix
+
+The analyzer attaches a `SuggestedFix` for the simple-inline case, so
+running the custom golangci-lint binary with `--fix` rewrites the source in-place.
+Example:
 
 ```sh
-go build -o /tmp/funcmethod ./cmd/funcmethod
-cd /path/to/target/module
-/tmp/funcmethod ./...
+cd /path/to/some/other/repo
+/path/to/go-linters/bin/golangci-lint run --fix ./...
+```
+
+When an inferred result has a private type from another package, the fix uses
+an exported interface from that package that preserves all public methods.
+If no such interface exists or the choice is ambiguous, the diagnostic has no
+automatic fix instead of generating an inaccessible type name.
+
+The hoist case is also autofixed: the analyzer uses type info to emit one
+`var <name> <type>` per hoisted variable at the top of the enclosing
+function and switches the assignment to `=`. It adds imports when a hoisted variable's type references a package that
+isn't imported in the current file, choosing an alias that avoids name collisions. Same-line trailing comments on the
+assignment are dropped by the rewrite.
+
+## methodfilecheck
+
+**Autofix: No.**
+
+Keeps receiver types and their methods in the same file. Within that file, the
+first method must follow the type declaration with only constructors in between.
+A constructor is any package function whose first result is the receiver type
+or a pointer to it, regardless of the function's name or additional results.
+Constructors in the type's file must appear before its first method.
+
+```go
+// Before: the constructor appears after the first method.
+type Service struct{}
+
+func (s *Service) Start() {}
+func BuildService() (*Service, error) { return nil, nil } // reported
+func (s *Service) Stop() {}
+```
+
+Move the constructor before the methods:
+
+```go
+type Service struct{}
+
+func BuildService() (*Service, error) { return nil, nil }
+
+func (s *Service) Start() {}
+func (s *Service) Stop()  {}
+```
+
+Methods for one receiver must remain contiguous relative to other receivers'
+methods: once another receiver's methods appear, returning to the earlier
+receiver is reported. Package functions and other non-method declarations between
+methods do not interrupt a receiver's method group.
+
+Pointer, value, and generic receivers and grouped type declarations are supported.
+Receiver aliases are checked under their declared alias name. The same-file
+requirement is waived when either the type's file or the method's file contains a
+`//go:build` directive; ordering and method grouping are still checked. Test files
+are checked, and generated files are skipped. Only files selected by the current
+build tags and platform participate in the check.
+
+No automatic fix is offered. Move declarations to keep the type, constructors,
+and method groups together.
+
+Enable it after rebuilding the custom binary with `golangci-lint custom -v`:
+
+```yaml
+linters:
+  enable:
+    - methodfilecheck
+  settings:
+    custom:
+      methodfilecheck:
+        type: module
+        description: keeps receiver types, constructors, and contiguous method blocks in the same file
+        original-url: github.com/justtrackio/go-linters
+```
+
+## multilineblock
+
+**Autofix: Yes.** Inserts the required blank lines.
+
+Requires a blank line after blocks and before `if`,
+`for` (including range), `switch` (including type switches), and `select` when
+the preceding contiguous group of statements spans more than one source line.
+This includes a single multiline assignment or several one-line statements.
+One-line assignments may still touch the following block. Leading comments on
+the first statement do not count toward the group's length. Existing blank lines
+separate groups, and generated files are skipped.
+
+```go
+// Before: a multiline statement group touches the following control block.
+name := "worker"
+retries := 3
+if name != "" { // reported: missing blank line before the block
+    start(name, retries)
+}
+stop(name) // reported: missing blank line after the block
+```
+
+The automatic fix separates the group and the blocks:
+
+```go
+name := "worker"
+retries := 3
+
+if name != "" {
+    start(name, retries)
+}
+
+stop(name)
+```
+
+When an assignment immediately precedes an `if` whose condition uses
+one of the assigned variables, the assignment and check stay together. If earlier
+statements make the group span multiple lines, the blank line is inserted before
+the assignment instead. This includes multiple return values and compound
+conditions such as `err == nil || status.Exists != nil`, including multiline
+calls and assignments. Checks with an `if` initializer use the normal rule.
+
+After-block spacing also covers standalone blocks and labeled control blocks.
+No blank line is required before an enclosing closing brace or between `if`
+and `else`. A deferred cleanup using a variable from the acquisition assignment
+may immediately follow its `if err != nil` check. Other deferred calls require
+the usual blank line.
+
+The automatic fix inserts a blank line after the preceding statement, preserving
+its trailing comment and keeping intervening comments attached to the block.
+Rebuild the custom binary with `golangci-lint custom -v`, then enable:
+
+```yaml
+linters:
+  enable:
+    - multilineblock
+  settings:
+    custom:
+      multilineblock:
+        type: module
+        description: requires blank lines after blocks and before control blocks following multiline statement groups
+        original-url: github.com/justtrackio/go-linters
+```
+
+Run `golangci-lint run --fix` with the custom binary to insert the blank lines.
+
+## noanonstruct
+
+**Autofix: No.**
+
+Requires a declared type name for non-empty structs in production Go files.
+Checks literals, variable declarations, function signatures, and nested types.
+Empty structs (`struct{}`) and all structs in `_test.go` files are allowed.
+Direct struct type declarations (including aliases) are allowed; anonymous
+structs nested inside them are still reported. No automatic fix is offered,
+since naming and placing the new type requires a design decision.
+
+```go
+// Before: a non-empty anonymous struct in a production file.
+var config struct { // reported: define a named type instead
+    Name string
+}
+```
+
+Declare a named type:
+
+```go
+type Config struct {
+    Name string
+}
+
+var config Config
+```
+
+Enable it in the target project's golangci-lint v2 configuration after rebuilding
+the custom binary with `golangci-lint custom -v`:
+
+```yaml
+linters:
+  enable:
+    - noanonstruct
+  settings:
+    custom:
+      noanonstruct:
+        type: module
+        description: reports non-empty anonymous structs outside test files
+        original-url: github.com/justtrackio/go-linters
 ```
 
 ## okinline
+
+**Autofix: Yes.** Shares the safe-fix limitations of `iferrinline`.
 
 Reports assignments to `ok` immediately followed by `if !ok` or `if ok`,
 including function calls, map lookups, type assertions, and channel receives.
@@ -317,10 +467,43 @@ linters:
         original-url: github.com/justtrackio/go-linters
 ```
 
-For standalone use, install from the `linters` directory and run in the target module:
+## recvaftertype
+
+**Autofix: No.**
+
+Requires methods to appear after their receiver type when that type is declared
+in the same file. Go permits either order; this rule enforces declaration order
+as a style convention. Pointer, value, and generic receivers are checked,
+including types in grouped declarations and receiver aliases. Methods whose
+receiver type is declared in another file are allowed. Test files are checked;
+generated files are skipped.
+
+```go
+func (s *QueueService[T, F]) PurgeJobs() {} // reported
+
+type QueueService[T any, F any] struct{}
+```
+
+Move the method and its comments below the type declaration to resolve the
+diagnostic. No automatic fix is offered.
+
+Enable it after rebuilding the custom binary with `golangci-lint custom -v`:
+
+```yaml
+linters:
+  enable:
+    - recvaftertype
+  settings:
+    custom:
+      recvaftertype:
+        type: module
+        description: reports methods declared before their receiver type in the same file
+        original-url: github.com/justtrackio/go-linters
+```
+
+## Develop
 
 ```sh
-go install ./cmd/okinline
-cd /path/to/target/module
-okinline -fix ./...
+go mod tidy
+go test ./...
 ```

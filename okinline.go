@@ -31,14 +31,17 @@ func (p *OkInline) GetLoadMode() string {
 }
 
 func (p *OkInline) run(pass *analysis.Pass) (any, error) {
-	return runInlineCheck(pass, "okinline", "ok", isOkCondition)
+	return runInlineCheck(pass, "okinline", checkedOk)
 }
 
-func isOkCondition(expr ast.Expr) bool {
+func checkedOk(_ *analysis.Pass, expr ast.Expr) *ast.Ident {
 	expr = ast.Unparen(expr)
 	if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.NOT {
 		expr = ast.Unparen(unary.X)
 	}
 	id, ok := expr.(*ast.Ident)
-	return ok && id.Name == "ok"
+	if !ok || id.Name != "ok" {
+		return nil
+	}
+	return id
 }

@@ -1,0 +1,82 @@
+package iferrinline
+
+func NamedErrorUsedAfter() error {
+	convErr := boom()
+	if convErr != nil {
+		return convErr
+	}
+	return convErr
+}
+
+func CheckDifferentError(otherErr error) error {
+	convErr := boom()
+	if otherErr != nil {
+		return otherErr
+	}
+	return convErr
+}
+
+func NonErrorNamedErr() {
+	err := new(int)
+	if err != nil {
+		use(*err)
+	}
+}
+
+func NonErrorNamedConvErr() {
+	convErr := new(int)
+	if convErr != nil {
+		use(*convErr)
+	}
+}
+
+func ShadowedNil(nil error) error {
+	convErr := boom()
+	if convErr != nil {
+		return convErr
+	}
+	return nil
+}
+
+func NamedErrorAlreadyInline() error {
+	if convErr := boom(); convErr != nil {
+		return convErr
+	}
+	return nil
+}
+
+func NamedErrorAssignment() error {
+	var convErr error
+	if convErr = boom(); convErr != nil {
+		return convErr
+	}
+	return convErr
+}
+
+func NamedErrorWithCompanionInLoop(items []int) ([]int, error) {
+	var err error
+	var view int
+	var convErr error
+	applications := make([]int, 0, len(items))
+	for _, item := range items {
+		if view, convErr = bar(); convErr != nil {
+			return nil, wrap(convErr)
+		}
+
+		applications = append(applications, view+item)
+	}
+	return applications, err
+}
+
+type conversionError struct{}
+
+func (*conversionError) Error() string { return "conversion failed" }
+
+func concreteError() *conversionError { return nil }
+
+func ConcreteErrorVariable() error {
+	if convErr := concreteError(); convErr != nil {
+		return convErr
+	}
+	return nil
+}

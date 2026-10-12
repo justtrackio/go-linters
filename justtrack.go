@@ -11,36 +11,41 @@ func init() {
 
 type JustTrackPlugin struct{}
 
-func NewJustTrack(_ any) (register.LinterPlugin, error) {
-	return &JustTrackPlugin{}, nil
-}
-
 func (*JustTrackPlugin) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }
 
 func (*JustTrackPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
-	noAnonStruct, err := NewNoAnonStruct(nil)
-	if err != nil {
-		return nil, err
-	}
-	noAnonStructAnalyzers, err := noAnonStruct.BuildAnalyzers()
-	if err != nil {
-		return nil, err
-	}
+	var plugin register.LinterPlugin
+	var pluginAnalyzers []*analysis.Analyzer
+	var err error
 
-	ifErrInline, err := New(nil)
-	if err != nil {
-		return nil, err
+	constructors := []func(any) (register.LinterPlugin, error){
+		NewNoAnonStruct,
+		New,
+		NewFuncMethod,
+		NewOkInline,
+		NewMethodFileCheck,
+		NewMultilineBlock,
+		NewRecvAfterType,
 	}
-	ifErrInlineAnalyzers, err := ifErrInline.BuildAnalyzers()
-	if err != nil {
-		return nil, err
-	}
+	analyzers := make([]*analysis.Analyzer, 0, len(constructors))
 
-	analyzers := make([]*analysis.Analyzer, 0, len(noAnonStructAnalyzers)+len(ifErrInlineAnalyzers))
-	analyzers = append(analyzers, noAnonStructAnalyzers...)
-	analyzers = append(analyzers, ifErrInlineAnalyzers...)
+	for _, constructor := range constructors {
+		if plugin, err = constructor(nil); err != nil {
+			return nil, err
+		}
+
+		if pluginAnalyzers, err = plugin.BuildAnalyzers(); err != nil {
+			return nil, err
+		}
+
+		analyzers = append(analyzers, pluginAnalyzers...)
+	}
 
 	return analyzers, nil
+}
+
+func NewJustTrack(_ any) (register.LinterPlugin, error) {
+	return &JustTrackPlugin{}, nil
 }

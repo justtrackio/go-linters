@@ -2,7 +2,7 @@ package missingimport
 
 import (
 	"fmt" // Keep this comment.
-	time "time"
+	"time"
 
 	"testlintdata/iferrinline/widget"
 )

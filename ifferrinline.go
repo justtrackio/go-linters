@@ -2,6 +2,7 @@ package linters
 
 import (
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"maps"
@@ -28,7 +29,7 @@ func (p *IfErrInline) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	return []*analysis.Analyzer{
 		{
 			Name: "iferrinline",
-			Doc:  "reports err assignments followed by `if err != nil` that can be inlined into the if initializer",
+			Doc:  "reports error assignments followed by a non-nil check that can be inlined into the if initializer",
 			Run:  p.run,
 		},
 	}, nil
@@ -39,6 +40,7 @@ func (p *IfErrInline) GetLoadMode() string {
 }
 
 type candidate struct {
+	checkName  string
 	assign     *ast.AssignStmt
 	ifStmt     *ast.IfStmt
 	hoistNames []string
@@ -52,12 +54,12 @@ type declEdit struct {
 }
 
 func (p *IfErrInline) run(pass *analysis.Pass) (any, error) {
-	return runInlineCheck(pass, "iferrinline", "err", isErrNotNil)
+	return runInlineCheck(pass, "iferrinline", checkedError)
 }
 
 // runInlineCheck shares scope preservation and suggested fixes between the
 // error and boolean check analyzers.
-func runInlineCheck(pass *analysis.Pass, analyzerName, checkName string, matchesCondition func(ast.Expr) bool) (any, error) {
+func runInlineCheck(pass *analysis.Pass, analyzerName string, checkedVariable func(*analysis.Pass, ast.Expr) *ast.Ident) (any, error) {
 	for _, file := range pass.Files {
 		imports := buildImportMap(file)
 		originalImports := maps.Clone(imports)
@@ -70,7 +72,7 @@ func runInlineCheck(pass *analysis.Pass, analyzerName, checkName string, matches
 				return true
 			}
 			for i := 0; i < len(block.List)-1; i++ {
-				if c, ok := matchPattern(pass, file, block, i, checkName, matchesCondition); ok {
+				if c, ok := matchPattern(pass, file, block, i, checkedVariable); ok {
 					candidates = append(candidates, c)
 				}
 			}
@@ -101,6 +103,7 @@ func runInlineCheck(pass *analysis.Pass, analyzerName, checkName string, matches
 		importEdits := buildImportEdits(file, originalImports, imports)
 		varBlockEmitted := map[*ast.BlockStmt]bool{}
 		for _, c := range candidates {
+			checkName := c.checkName
 			msg := "if " + checkName + " can be inlined into the assignment"
 			if len(c.hoistNames) > 0 {
 				hoistDisplay := make([]string, len(c.hoistNames))
@@ -143,7 +146,7 @@ func runInlineCheck(pass *analysis.Pass, analyzerName, checkName string, matches
 	return nil, nil
 }
 
-func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i int, checkName string, matchesCondition func(ast.Expr) bool) (candidate, bool) {
+func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i int, checkedVariable func(*analysis.Pass, ast.Expr) *ast.Ident) (candidate, bool) {
 	var zero candidate
 
 	assign, ok := block.List[i].(*ast.AssignStmt)
@@ -153,6 +156,15 @@ func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i i
 	if len(assign.Rhs) != 1 || len(assign.Lhs) == 0 {
 		return zero, false
 	}
+	ifStmt, ok := block.List[i+1].(*ast.IfStmt)
+	if !ok || ifStmt.Init != nil {
+		return zero, false
+	}
+	checked := checkedVariable(pass, ifStmt.Cond)
+	if checked == nil {
+		return zero, false
+	}
+	checkName := checked.Name
 
 	var (
 		hasCheck   bool
@@ -165,6 +177,9 @@ func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i i
 		}
 		switch id.Name {
 		case checkName:
+			if pass.TypesInfo == nil || pass.TypesInfo.ObjectOf(id) == nil || pass.TypesInfo.ObjectOf(id) != pass.TypesInfo.ObjectOf(checked) {
+				return zero, false
+			}
 			hasCheck = true
 		case "_":
 		default:
@@ -178,18 +193,10 @@ func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i i
 		return zero, false
 	}
 
-	ifStmt, ok := block.List[i+1].(*ast.IfStmt)
-	if !ok || ifStmt.Init != nil {
-		return zero, false
-	}
-	if !matchesCondition(ifStmt.Cond) {
-		return zero, false
-	}
-
 	// Plain assignments keep the existing bindings, so inlining does not
 	// restrict their scope even when the checked variable or companions are used afterward.
 	if assign.Tok == token.ASSIGN {
-		return candidate{assign: assign, ifStmt: ifStmt}, true
+		return candidate{checkName: checkName, assign: assign, ifStmt: ifStmt}, true
 	}
 
 	rest := block.List[i+2:]
@@ -203,7 +210,7 @@ func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i i
 		return zero, false
 	}
 
-	c := candidate{assign: assign, ifStmt: ifStmt, hoistNames: hoist}
+	c := candidate{checkName: checkName, assign: assign, ifStmt: ifStmt, hoistNames: hoist}
 	if len(hoist) > 0 {
 		c.fnBody = enclosingFuncBody(file, assign.Pos())
 		if c.fnBody == nil {
@@ -423,6 +430,9 @@ func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]str
 			}
 			usedImportNames[alias] = true
 			imports[p.Path()] = alias
+			if alias == p.Name() {
+				imports[p.Path()] = ""
+			}
 		}
 		if alias == "." {
 			return ""
@@ -454,7 +464,11 @@ func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]str
 			if obj == nil {
 				continue
 			}
-			typeStr := types.TypeString(obj.Type(), qualPkgs)
+			declType, ok := accessibleHoistType(obj.Type(), pass.Pkg)
+			if !ok {
+				return declEdit{}, false
+			}
+			typeStr := types.TypeString(declType, qualPkgs)
 			seen[name] = true
 			newCollected = append(newCollected, entry{name: name, typ: typeStr})
 		}
@@ -478,7 +492,11 @@ func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]str
 				if obj == nil {
 					continue
 				}
-				typeStr := types.TypeString(obj.Type(), qualPkgs)
+				declType, ok := accessibleHoistType(obj.Type(), pass.Pkg)
+				if !ok {
+					return declEdit{}, false
+				}
+				typeStr := types.TypeString(declType, qualPkgs)
 				existingCollected = append(existingCollected, entry{name: n.Name, typ: typeStr})
 			}
 		}
@@ -509,6 +527,73 @@ func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]str
 		b.WriteString("\n")
 	}
 	return declEdit{pos: pos, end: end, text: b.String()}, true
+}
+
+// accessibleHoistType avoids spelling private imported types in generated declarations.
+// Only interfaces preserving the complete public method set are considered; a
+// narrower interface could remove methods needed by subsequent statements.
+func accessibleHoistType(typ types.Type, current *types.Package) (types.Type, bool) {
+	if hoistTypeAccessible(typ, current) {
+		return typ, true
+	}
+	base := types.Unalias(typ)
+	if ptr, ok := base.(*types.Pointer); ok {
+		base = types.Unalias(ptr.Elem())
+	}
+	named, ok := base.(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return nil, false
+	}
+	methods := types.NewMethodSet(typ)
+	publicMethods := 0
+	for i := 0; i < methods.Len(); i++ {
+		if methods.At(i).Obj().Exported() {
+			publicMethods++
+		}
+	}
+	if publicMethods == 0 {
+		return nil, false
+	}
+	var replacement types.Type
+	scope := named.Obj().Pkg().Scope()
+	for _, name := range scope.Names() {
+		obj, ok := scope.Lookup(name).(*types.TypeName)
+		if !ok || !obj.Exported() || !hoistTypeAccessible(obj.Type(), current) {
+			continue
+		}
+		iface, ok := obj.Type().Underlying().(*types.Interface)
+		if !ok || !iface.IsMethodSet() || iface.NumMethods() != publicMethods || !types.Implements(typ, iface) {
+			continue
+		}
+		if replacement != nil && !types.Identical(replacement, obj.Type()) {
+			// Multiple public contracts are ambiguous: keep the inferred binding.
+			return nil, false
+		}
+		replacement = obj.Type()
+	}
+	return replacement, replacement != nil
+}
+
+func hoistTypeAccessible(typ types.Type, current *types.Package) bool {
+	// Parsing the rendered type also covers nested pointers, containers,
+	// function signatures, aliases, and generic type arguments.
+	expr, err := parser.ParseExpr(types.TypeString(typ, func(pkg *types.Package) string {
+		if pkg == current {
+			return ""
+		}
+		return "external"
+	}))
+	if err != nil {
+		return false
+	}
+	accessible := true
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if selector, ok := node.(*ast.SelectorExpr); ok && !selector.Sel.IsExported() {
+			accessible = false
+		}
+		return accessible
+	})
+	return accessible
 }
 
 func collectVarContext(fnBody *ast.BlockStmt) (allNames map[string]bool, topStmts []ast.Stmt) {
@@ -667,17 +752,24 @@ func buildHoistFix(pass *analysis.Pass, c candidate, edit declEdit, includeVarBl
 	}, true
 }
 
-func isErrNotNil(expr ast.Expr) bool {
+func checkedError(pass *analysis.Pass, expr ast.Expr) *ast.Ident {
 	bin, ok := expr.(*ast.BinaryExpr)
 	if !ok || bin.Op != token.NEQ {
-		return false
+		return nil
 	}
 	x, xok := bin.X.(*ast.Ident)
 	y, yok := bin.Y.(*ast.Ident)
-	if !xok || !yok {
-		return false
+	if !xok || !yok || pass.TypesInfo == nil {
+		return nil
 	}
-	return x.Name == "err" && y.Name == "nil"
+	if pass.TypesInfo.ObjectOf(y) != types.Universe.Lookup("nil") {
+		return nil
+	}
+	obj, ok := pass.TypesInfo.ObjectOf(x).(*types.Var)
+	if !ok || !types.Implements(obj.Type(), types.Universe.Lookup("error").Type().Underlying().(*types.Interface)) {
+		return nil
+	}
+	return x
 }
 
 func buildImportMap(file *ast.File) map[string]string {
@@ -839,7 +931,7 @@ func buildImportEdits(file *ast.File, original, updated map[string]string) []ana
 	if len(paths) > 0 {
 		var additions strings.Builder
 		for _, path := range paths {
-			additions.WriteString("\n" + updated[path] + " " + strconv.Quote(path))
+			additions.WriteString("\n" + importText(path, updated[path]))
 		}
 		additions.WriteString("\n")
 		for _, decl := range file.Decls {
@@ -858,8 +950,32 @@ func buildImportEdits(file *ast.File, original, updated map[string]string) []ana
 				continue
 			}
 			if gen.Lparen.IsValid() {
-				pos := gen.Lparen + 1
-				edits = append(edits, analysis.TextEdit{Pos: pos, End: pos, NewText: []byte(strings.TrimSuffix(additions.String(), "\n"))})
+				insertions := map[token.Pos]string{}
+				for _, path := range paths {
+					pos := gen.Lparen + 1
+					bestScore := -1
+					for _, spec := range gen.Specs {
+						imp := spec.(*ast.ImportSpec)
+						existing, _ := strconv.Unquote(imp.Path.Value)
+						score := importMatchScore(path, existing)
+						if score > bestScore {
+							bestScore = score
+							pos = imp.End()
+							if imp.Comment != nil {
+								pos = imp.Comment.End()
+							}
+						}
+					}
+					insertions[pos] += "\n\t" + importText(path, updated[path])
+				}
+				var positions []token.Pos
+				for pos := range insertions {
+					positions = append(positions, pos)
+				}
+				sort.Slice(positions, func(i, j int) bool { return positions[i] < positions[j] })
+				for _, pos := range positions {
+					edits = append(edits, analysis.TextEdit{Pos: pos, End: pos, NewText: []byte(insertions[pos])})
+				}
 			} else {
 				spec := gen.Specs[0].(*ast.ImportSpec)
 				end := spec.End()
@@ -876,4 +992,25 @@ func buildImportEdits(file *ast.File, original, updated map[string]string) []ana
 		edits = append(edits, analysis.TextEdit{Pos: file.Name.End(), End: file.Name.End(), NewText: []byte("\n\nimport (" + additions.String() + ")")})
 	}
 	return edits
+}
+
+func importText(path, alias string) string {
+	if alias == "" {
+		return strconv.Quote(path)
+	}
+	return alias + " " + strconv.Quote(path)
+}
+
+// Prefer the longest shared path prefix, then an import of the same kind.
+// Taking the first match on ties keeps local import groups separate.
+func importMatchScore(path, existing string) int {
+	score := 0
+	if strings.Contains(strings.Split(path, "/")[0], ".") == strings.Contains(strings.Split(existing, "/")[0], ".") {
+		score = 1
+	}
+	left, right := strings.Split(path, "/"), strings.Split(existing, "/")
+	for i := 0; i < len(left) && i < len(right) && left[i] == right[i]; i++ {
+		score += 2
+	}
+	return score
 }
