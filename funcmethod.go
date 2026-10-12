@@ -16,10 +16,6 @@ func init() {
 // FuncMethodPlugin finds private helpers owned by a single receiver type.
 type FuncMethodPlugin struct{}
 
-func NewFuncMethod(_ any) (register.LinterPlugin, error) {
-	return &FuncMethodPlugin{}, nil
-}
-
 func (p *FuncMethodPlugin) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }
@@ -32,6 +28,10 @@ func (p *FuncMethodPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	}}, nil
 }
 
+func NewFuncMethod(_ any) (register.LinterPlugin, error) {
+	return &FuncMethodPlugin{}, nil
+}
+
 type methodOwnership struct {
 	decl      *ast.FuncDecl
 	generated bool
@@ -41,79 +41,124 @@ type methodOwnership struct {
 }
 
 func runFuncMethod(pass *analysis.Pass) (any, error) {
+	functions, ordered := collectMethodOwnership(pass)
+	collectMethodCalls(pass, functions)
+	propagateMethodOwnership(ordered)
+	reportMethodOwnership(pass, ordered)
+
+	return nil, nil
+}
+
+func collectMethodOwnership(pass *analysis.Pass) (map[*types.Func]*methodOwnership, []*methodOwnership) {
+	var obj *types.Func
+
 	functions := map[*types.Func]*methodOwnership{}
 	var ordered []*methodOwnership
+
 	for _, file := range pass.Files {
 		if funcMethodTestFile(pass, file) {
 			continue
 		}
+
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
 			}
-			obj, ok := pass.TypesInfo.Defs[fn.Name].(*types.Func)
-			if !ok {
+
+			if obj, ok = pass.TypesInfo.Defs[fn.Name].(*types.Func); !ok {
 				continue
 			}
+
 			state := &methodOwnership{
 				decl: fn, generated: ast.IsGenerated(file),
 				owners: map[*types.Named]bool{}, callees: map[*methodOwnership]bool{},
 			}
-			if recv := obj.Type().(*types.Signature).Recv(); recv != nil {
-				if owner := funcMethodReceiver(recv.Type()); owner != nil {
-					state.owners[owner] = true
-				}
-			} else if obj.Exported() || fn.Name.Name == "init" || (fn.Name.Name == "main" && pass.Pkg.Name() == "main") {
-				// These are entry points whose callers cannot be inferred locally.
-				state.blocked = true
-			}
+
+			initializeMethodOwnership(pass, obj, state)
+
 			functions[obj] = state
 			ordered = append(ordered, state)
 		}
 	}
 
+	return functions, ordered
+}
+
+func initializeMethodOwnership(pass *analysis.Pass, obj *types.Func, state *methodOwnership) {
+	if recv := obj.Type().(*types.Signature).Recv(); recv != nil {
+		if owner := funcMethodReceiver(recv.Type()); owner != nil {
+			state.owners[owner] = true
+		}
+	} else if obj.Exported() || state.decl.Name.Name == "init" || (state.decl.Name.Name == "main" && pass.Pkg.Name() == "main") {
+		// These are entry points whose callers cannot be inferred locally.
+		state.blocked = true
+	}
+}
+
+func collectMethodCalls(pass *analysis.Pass, functions map[*types.Func]*methodOwnership) {
 	for _, file := range pass.Files {
 		if funcMethodTestFile(pass, file) {
 			continue
 		}
+
 		for _, decl := range file.Decls {
-			var caller *methodOwnership
-			if fn, ok := decl.(*ast.FuncDecl); ok {
-				obj, _ := pass.TypesInfo.Defs[fn.Name].(*types.Func)
-				caller = functions[obj]
-			}
-			// Identify direct calls separately from function values. Escaped
-			// callbacks may run on behalf of callers outside this package.
-			direct := map[*ast.Ident]bool{}
-			ast.Inspect(decl, func(node ast.Node) bool {
-				if call, ok := node.(*ast.CallExpr); ok {
-					if id := funcMethodCallee(call.Fun); id != nil {
-						direct[id] = true
-					}
-				}
-				return true
-			})
-			ast.Inspect(decl, func(node ast.Node) bool {
-				id, ok := node.(*ast.Ident)
-				if !ok {
-					return true
-				}
-				obj, _ := pass.TypesInfo.Uses[id].(*types.Func)
-				callee := functions[obj]
-				if callee == nil || callee.decl.Recv != nil {
-					return true
-				}
-				if caller == nil || !direct[id] {
-					callee.blocked = true
-				} else {
-					caller.callees[callee] = true
-				}
-				return true
-			})
+			collectDeclarationMethodCalls(pass, decl, functions)
 		}
 	}
+}
 
+func collectDeclarationMethodCalls(pass *analysis.Pass, decl ast.Decl, functions map[*types.Func]*methodOwnership) {
+	var caller *methodOwnership
+	if fn, ok := decl.(*ast.FuncDecl); ok {
+		obj, _ := pass.TypesInfo.Defs[fn.Name].(*types.Func)
+		caller = functions[obj]
+	}
+
+	// Identify direct calls separately from function values. Escaped
+	// callbacks may run on behalf of callers outside this package.
+	direct := directMethodCalls(decl)
+	ast.Inspect(decl, func(node ast.Node) bool {
+		var ok bool
+		var id *ast.Ident
+
+		if id, ok = node.(*ast.Ident); !ok {
+			return true
+		}
+
+		obj, _ := pass.TypesInfo.Uses[id].(*types.Func)
+
+		callee := functions[obj]
+		if callee == nil || callee.decl.Recv != nil {
+			return true
+		}
+
+		if caller == nil || !direct[id] {
+			callee.blocked = true
+		} else {
+			caller.callees[callee] = true
+		}
+
+		return true
+	})
+}
+
+func directMethodCalls(decl ast.Decl) map[*ast.Ident]bool {
+	direct := map[*ast.Ident]bool{}
+	ast.Inspect(decl, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok {
+			if id := funcMethodCallee(call.Fun); id != nil {
+				direct[id] = true
+			}
+		}
+
+		return true
+	})
+
+	return direct
+}
+
+func propagateMethodOwnership(ordered []*methodOwnership) {
 	// Propagate receiver owners and unrestricted entry points through helper
 	// chains. Unreachable private functions (including test-only helpers) do
 	// not establish production ownership. A fixed point handles recursion.
@@ -125,6 +170,7 @@ func runFuncMethod(pass *analysis.Pass) (any, error) {
 					callee.blocked = true
 					changed = true
 				}
+
 				for owner := range caller.owners {
 					if !callee.owners[owner] {
 						callee.owners[owner] = true
@@ -134,19 +180,23 @@ func runFuncMethod(pass *analysis.Pass) (any, error) {
 			}
 		}
 	}
+}
+
+func reportMethodOwnership(pass *analysis.Pass, ordered []*methodOwnership) {
 	for _, state := range ordered {
 		if state.decl.Recv != nil || state.generated || state.blocked || len(state.owners) != 1 || state.decl.Type.TypeParams != nil {
 			continue
 		}
+
 		for owner := range state.owners {
 			// Avoid suggesting a method that collides with a field or method.
 			if obj, _, _ := types.LookupFieldOrMethod(types.NewPointer(owner), true, pass.Pkg, state.decl.Name.Name); obj != nil {
 				continue
 			}
+
 			pass.Reportf(state.decl.Name.Pos(), "function %s is used only by %s; make it a method of %s", state.decl.Name.Name, owner.Obj().Name(), owner.Obj().Name())
 		}
 	}
-	return nil, nil
 }
 
 func funcMethodTestFile(pass *analysis.Pass, file *ast.File) bool {
@@ -158,9 +208,11 @@ func funcMethodReceiver(typ types.Type) *types.Named {
 	if ptr, ok := typ.(*types.Pointer); ok {
 		typ = types.Unalias(ptr.Elem())
 	}
+
 	if named, ok := typ.(*types.Named); ok {
 		return named.Origin()
 	}
+
 	return nil
 }
 

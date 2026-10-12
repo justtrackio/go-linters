@@ -31,11 +31,15 @@ func TestIfErrInline(t *testing.T) {
 }
 
 func testdataDir(t *testing.T) string {
+	var ok bool
+	var testFilename string
+
 	t.Helper()
-	_, testFilename, _, ok := runtime.Caller(1)
-	if !ok {
+
+	if _, testFilename, _, ok = runtime.Caller(1); !ok {
 		require.Fail(t, "unable to get current test filename")
 	}
+
 	return filepath.Join(filepath.Dir(testFilename), "testdata")
 }
 
@@ -45,27 +49,34 @@ func TestIfErrInlineFixedCodeCompiles(t *testing.T) {
 	gopath := t.TempDir()
 	destination := filepath.Join(gopath, "src", "testlintdata", "iferrinline")
 	err := filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+		var rel string
+		var data []byte
+
 		if err != nil {
 			return err
 		}
+
 		if entry.IsDir() || !strings.HasSuffix(path, ".go") {
 			return nil
 		}
-		rel, err := filepath.Rel(source, path)
-		if err != nil {
+
+		if rel, err = filepath.Rel(source, path); err != nil {
 			return err
 		}
+
 		if _, err := os.Stat(path + ".golden"); err == nil {
 			path += ".golden"
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
+
+		if data, err = os.ReadFile(path); err != nil {
 			return err
 		}
+
 		target := filepath.Join(destination, rel)
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
+
 		return os.WriteFile(target, data, 0o644)
 	})
 	require.NoError(t, err)
@@ -117,11 +128,13 @@ import (
 	updated["github.com/go-git/go-git/v5/plumbing/transport/http"] = "transport2"
 	edits := buildImportEdits(file, original, updated)
 	fixed := source
+
 	for i := len(edits) - 1; i >= 0; i-- {
 		edit := edits[i]
 		start, end := fset.Position(edit.Pos).Offset, fset.Position(edit.End).Offset
 		fixed = fixed[:start] + string(edit.NewText) + fixed[end:]
 	}
+
 	formatted, err := format.Source([]byte(fixed))
 	require.NoError(t, err)
 	require.Equal(t, expected, string(formatted))

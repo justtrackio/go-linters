@@ -14,10 +14,6 @@ func init() {
 
 type OkInline struct{}
 
-func NewOkInline(_ any) (register.LinterPlugin, error) {
-	return &OkInline{}, nil
-}
-
 func (p *OkInline) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	return []*analysis.Analyzer{{
 		Name: "okinline",
@@ -34,14 +30,20 @@ func (p *OkInline) run(pass *analysis.Pass) (any, error) {
 	return runInlineCheck(pass, "okinline", checkedOk)
 }
 
+func NewOkInline(_ any) (register.LinterPlugin, error) {
+	return &OkInline{}, nil
+}
+
 func checkedOk(_ *analysis.Pass, expr ast.Expr) *ast.Ident {
 	expr = ast.Unparen(expr)
 	if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.NOT {
 		expr = ast.Unparen(unary.X)
 	}
+
 	id, ok := expr.(*ast.Ident)
 	if !ok || id.Name != "ok" {
 		return nil
 	}
+
 	return id
 }

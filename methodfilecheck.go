@@ -41,16 +41,19 @@ type methodFileType struct {
 func runMethodFileCheck(pass *analysis.Pass) (any, error) {
 	types := make(map[string]methodFileType)
 	guarded := make(map[*ast.File]bool)
+
 	for _, file := range pass.Files {
 		if ast.IsGenerated(file) {
 			continue
 		}
+
 		guarded[file] = methodFileGuarded(file)
 		for index, decl := range file.Decls {
 			group, ok := decl.(*ast.GenDecl)
 			if !ok || group.Tok != token.TYPE {
 				continue
 			}
+
 			for _, spec := range group.Specs {
 				name := spec.(*ast.TypeSpec).Name.Name
 				if _, exists := types[name]; !exists {
@@ -59,27 +62,33 @@ func runMethodFileCheck(pass *analysis.Pass) (any, error) {
 			}
 		}
 	}
+
 	for _, file := range pass.Files {
 		if ast.IsGenerated(file) {
 			continue
 		}
+
 		checkMethodFile(pass, file, types, guarded)
 	}
+
 	return nil, nil
 }
 
 func checkMethodFile(pass *analysis.Pass, file *ast.File, types map[string]methodFileType, guarded map[*ast.File]bool) {
 	first := make(map[string]*ast.FuncDecl)
 	previousReceiver := ""
+
 	for index, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
 			continue
 		}
+
 		receiver := methodFileTypeName(fn.Recv.List[0].Type)
 		if receiver == "" {
 			continue
 		}
+
 		typ, known := types[receiver]
 		if first[receiver] == nil {
 			first[receiver] = fn
@@ -89,13 +98,20 @@ func checkMethodFile(pass *analysis.Pass, file *ast.File, types map[string]metho
 		} else if receiver != previousReceiver {
 			pass.Reportf(fn.Pos(), "method %s.%s: keep %s methods contiguous; another receiver's methods separate this block", receiver, fn.Name.Name, receiver)
 		}
+
 		// Report once per method run, like upstream, rather than once per method.
 		if receiver != previousReceiver && known && typ.file != file && !guarded[file] && !guarded[typ.file] {
 			filename := filepath.Base(pass.Fset.Position(typ.file.Pos()).Filename)
 			pass.Reportf(fn.Pos(), "method %s.%s: must be declared in %s with receiver type %s", receiver, fn.Name.Name, filename, receiver)
 		}
+
 		previousReceiver = receiver
 	}
+
+	checkMethodFileConstructors(pass, file, types, first)
+}
+
+func checkMethodFileConstructors(pass *analysis.Pass, file *ast.File, types map[string]methodFileType, first map[string]*ast.FuncDecl) {
 	for _, decl := range file.Decls {
 		var fn *ast.FuncDecl
 		if candidate, ok := decl.(*ast.FuncDecl); ok {
@@ -103,8 +119,10 @@ func checkMethodFile(pass *analysis.Pass, file *ast.File, types map[string]metho
 		} else {
 			continue
 		}
+
 		receiver := methodFileConstructedType(fn)
 		typ, known := types[receiver]
+
 		if method := first[receiver]; known && typ.file == file && method != nil && fn.Pos() > method.Pos() {
 			pass.Reportf(fn.Pos(), "constructor %s for %s: must be declared before %s methods", fn.Name.Name, receiver, receiver)
 		}
@@ -118,6 +136,7 @@ func methodFileOnlyConstructors(decls []ast.Decl, receiver string) bool {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -127,6 +146,7 @@ func methodFileConstructedType(fn *ast.FuncDecl) string {
 	if fn.Recv != nil || fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
 		return ""
 	}
+
 	return methodFileTypeName(fn.Type.Results.List[0].Type)
 }
 
@@ -153,5 +173,6 @@ func methodFileGuarded(file *ast.File) bool {
 			}
 		}
 	}
+
 	return false
 }

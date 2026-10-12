@@ -22,7 +22,7 @@ func (*JustTrackPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 
 	constructors := []func(any) (register.LinterPlugin, error){
 		NewNoAnonStruct,
-		New,
+		NewIfErrInline,
 		NewFuncMethod,
 		NewOkInline,
 		NewMethodFileCheck,
