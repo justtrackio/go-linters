@@ -55,10 +55,11 @@ func NamedErrorAssignment() error {
 
 func NamedErrorWithCompanionInLoop(items []int) ([]int, error) {
 	var err error
-	var view int
-	var convErr error
 	applications := make([]int, 0, len(items))
 	for _, item := range items {
+		var view int
+		var convErr error
+		// want "if convErr can be inlined by declaring view, convErr before the assignment and changing := to ="
 		if view, convErr = bar(); convErr != nil {
 			return nil, wrap(convErr)
 		}
@@ -70,9 +71,9 @@ func NamedErrorWithCompanionInLoop(items []int) ([]int, error) {
 
 type conversionError struct{}
 
-func (*conversionError) Error() string { return "conversion failed" }
-
 func concreteError() *conversionError { return nil }
+
+func (*conversionError) Error() string { return "conversion failed" }
 
 func ConcreteErrorVariable() error {
 	if convErr := concreteError(); convErr != nil {

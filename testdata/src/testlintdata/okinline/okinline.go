@@ -7,7 +7,7 @@ func use(string)                {}
 func check() bool               { return true }
 
 func EventUsedAfter() string {
-	event, ok := normalize() // want "if ok can be inlined by hoisting event to var declarations at the top of the function and changing := to ="
+	event, ok := normalize() // want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
 	if !ok {
 		return "not configured"
 	}
@@ -56,7 +56,7 @@ func AssignmentUsedAfter() bool {
 }
 
 func BothUsedAfter() (string, bool) {
-	event, ok := normalize() // want "if ok can be inlined by hoisting event to var declarations at the top of the function and changing := to ="
+	event, ok := normalize() // want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
 	if !ok {
 		return "", ok
 	}
@@ -65,7 +65,7 @@ func BothUsedAfter() (string, bool) {
 
 func ExistingVar() string {
 	var ok bool
-	event, ok := normalize() // want "if ok can be inlined by hoisting event to var declarations at the top of the function and changing := to ="
+	event, ok := normalize() // want "if ok can be inlined by declaring event before the assignment and changing := to ="
 	if !ok {
 		return ""
 	}
@@ -73,7 +73,7 @@ func ExistingVar() string {
 }
 
 func Parameter(event string) string {
-	event, ok := normalize() // want "if ok can be inlined by hoisting event to var declarations at the top of the function and changing := to ="
+	event, ok := normalize() // want "if ok can be inlined by declaring ok before the assignment and changing := to ="
 	if !ok {
 		return ""
 	}
@@ -81,11 +81,11 @@ func Parameter(event string) string {
 }
 
 func Consecutive() {
-	first, ok := normalize() // want "if ok can be inlined by hoisting first to var declarations at the top of the function and changing := to ="
+	first, ok := normalize() // want "if ok can be inlined by declaring first, ok before the assignment and changing := to ="
 	if !ok {
 		return
 	}
-	second, ok := normalize() // want "if ok can be inlined by hoisting second to var declarations at the top of the function and changing := to ="
+	second, ok := normalize() // want "if ok can be inlined by declaring second before the assignment and changing := to ="
 	if !ok {
 		return
 	}
@@ -94,7 +94,7 @@ func Consecutive() {
 }
 
 func MapLookup(events map[string]string) string {
-	event, ok := events["event"] // want "if ok can be inlined by hoisting event to var declarations at the top of the function and changing := to ="
+	event, ok := events["event"] // want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
 	if !ok {
 		return ""
 	}
@@ -109,7 +109,7 @@ func TypeAssertion(value any) {
 }
 
 func ChannelReceive(events <-chan string) string {
-	event, ok := <-events // want "if ok can be inlined by hoisting event to var declarations at the top of the function and changing := to ="
+	event, ok := <-events // want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
 	if !ok {
 		return ""
 	}
@@ -125,7 +125,7 @@ func Parenthesized() {
 
 func Nested() {
 	for i := 0; i < 2; i++ {
-		event, ok := normalize() // want "if ok can be inlined by hoisting event to var declarations at the top of the function and changing := to ="
+		event, ok := normalize() // want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
 		if !ok {
 			return
 		}
@@ -133,11 +133,22 @@ func Nested() {
 	}
 }
 
+func IfInitOkShadow() string {
+	if _, ok := normalize(); ok {
+		event, ok := normalize() // want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
+		if !ok {
+			return ""
+		}
+		return event
+	}
+	return ""
+}
+
 func widgetOK() (*widget.Service, bool) { return nil, true }
 
 func PackageShadow() *widget.Service {
 	_ = widget.Service{}
-	widget, ok := widgetOK() // want "if ok can be inlined by hoisting widget \\(renamed to service to avoid shadowing\\) to var declarations at the top of the function and changing := to ="
+	widget, ok := widgetOK() // want "if ok can be inlined by declaring widget, ok before the assignment and changing := to ="
 	if !ok {
 		return nil
 	}

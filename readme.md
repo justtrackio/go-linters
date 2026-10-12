@@ -91,7 +91,8 @@ mise run test-bundle
 The custom binary is written to `./bin/golangci-lint`.
 Analyzer tests use `analysistest` with checked-in Go fixtures and expected fix outputs.
 The Go bundle integration test reuses these fixtures to check diagnostics and real `--fix` behavior.
-It compares formatted golden files, compiles corrected packages, and verifies that they lint cleanly.
+It compiles corrected packages after each pass and verifies that the aggregate
+rules lint them cleanly. Per-rule tests check the exact golden output separately.
 
 Run the custom binary from the project that you want to lint:
 
@@ -213,13 +214,13 @@ if err != nil { ... }
 if x, err := bar(); err != nil { ... }
 ```
 
-When some companion variable (e.g. `x`) is still used after the `if`, the
-diagnostic instead suggests hoisting it to a `var` declaration at the top of
-the enclosing function and switching the assignment to `=`:
+When a companion variable (e.g. `x`) is used after the `if`, the fix declares
+the new variables immediately before the original assignment, in the same
+block, and switches the assignment to `=`:
 
 ```go
 var x SomeType
-// ...
+var err error
 if x, err = bar(); err != nil { ... }
 use(x)
 ```
@@ -235,16 +236,20 @@ cd /path/to/some/other/repo
 /path/to/go-linters/bin/golangci-lint run --fix ./...
 ```
 
-When an inferred result has a private type from another package, the fix uses
-an exported interface from that package that preserves all public methods.
-If no such interface exists or the choice is ambiguous, the diagnostic has no
-automatic fix instead of generating an inaccessible type name.
+The fix preserves existing assignment bindings and initializers. New variables
+stay in their original block, including inside loops and nested conditionals.
+Comments between the assignment and check stay before the rewritten `if`.
 
-The hoist case is also autofixed: the analyzer uses type info to emit one
-`var <name> <type>` per hoisted variable at the top of the enclosing
-function and switches the assignment to `=`. It adds imports when a hoisted variable's type references a package that
-isn't imported in the current file, choosing an alias that avoids name collisions. Same-line trailing comments on the
-assignment are dropped by the rewrite.
+Type information supplies the exact declaration types and any required imports.
+The analyzer leaves a diagnostic without an automatic fix when declarations
+would capture an outer name, a type is inaccessible or shadowed, or the two
+inline rules require incompatible import changes. It does not replace a private
+concrete type with a public interface, because that can change behavior.
+
+Nested fixes are applied from the inside out to avoid overlapping source edits.
+Rerun `--fix` for newly exposed fixes, including spacing changes after an inline
+rewrite. Review the changes and compile the affected production and test
+packages before committing them.
 
 ## methodfilecheck
 
@@ -435,13 +440,12 @@ if event, ok := NormalizeDenormalizeEventType(s.events, eventType); !ok {
 }
 ```
 
-When `event` is used afterward, it declares `event` and `ok` at the top of the
-function and uses `=` so the value remains available:
+When `event` is used afterward, it declares the new variables immediately before
+the original assignment, in the same block, and uses `=`:
 
 ```go
 var ok bool
 var event EventType
-// ...
 if event, ok = NormalizeDenormalizeEventType(s.events, eventType); !ok {
     return SetupTableStatus{}, newBadRequestError("eventType is not configured")
 }

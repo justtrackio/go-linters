@@ -6,15 +6,16 @@ import (
 )
 
 func Capacity() (int, error) {
-	var err error
-	var value time2.Duration
-	var count int
-
 	time := 1
+	var value time2.Duration
+	var err error
+	// want "if err can be inlined by declaring value, err before the assignment and changing := to ="
 	if value, err = widget.Duration(); err != nil {
 		return 0, err
 	}
 
+	var count int
+	// want "if err can be inlined by declaring count before the assignment and changing := to ="
 	if count, err = convert(int(value)); err != nil {
 		return 0, err
 	}
@@ -25,9 +26,9 @@ func Capacity() (int, error) {
 func convert(value int) (int, error) { return value, nil }
 
 func Other() (int, error) {
-	var err error
 	var value time2.Duration
-
+	var err error
+	// want "if err can be inlined by declaring value, err before the assignment and changing := to ="
 	if value, err = widget.Duration(); err != nil {
 		return 0, err
 	}

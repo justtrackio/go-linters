@@ -27,7 +27,7 @@ func (p *OkInline) GetLoadMode() string {
 }
 
 func (p *OkInline) run(pass *analysis.Pass) (any, error) {
-	return runInlineCheck(pass, "okinline", checkedOk)
+	return runInlineCheck(pass, "okinline", checkedOk, checkedError)
 }
 
 func NewOkInline(_ any) (register.LinterPlugin, error) {

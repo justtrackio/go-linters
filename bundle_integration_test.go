@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"go/format"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -39,6 +38,7 @@ func TestBundle(t *testing.T) {
 	goldens := collectBundleGoldens(t, fixtureRoot)
 	require.NotEmpty(t, goldens, "expected existing analyzer golden fixtures")
 	fixablePackages := goldenFixturePackages(goldens)
+	fixablePackages = append(fixablePackages, "./testlintdata/inlineinteraction")
 
 	workspace := t.TempDir()
 	gopath := filepath.Join(workspace, "gopath")
@@ -64,22 +64,31 @@ func TestBundle(t *testing.T) {
 
 	require.True(t, hasBundleIssueAt(issues, "testlintdata/noanonstruct/structs.go", 12), "expected the existing non-fixable noanonstruct diagnostic")
 
-	fix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
-	require.Equal(t, 0, fix.exitCode, "expected --fix to apply the analyzer suggestions; stdout:\n%s\nstderr:\n%s", fix.stdout, fix.stderr)
-
-	for _, golden := range goldens {
-		want, readErr := os.ReadFile(golden.goldenPath)
-		require.NoError(t, readErr, "read golden %s", golden.relativePath)
-		got, readErr := os.ReadFile(filepath.Join(fixtureCopy, golden.relativePath))
-		require.NoError(t, readErr, "read autofixed source %s", golden.relativePath)
-		want, readErr = format.Source(want)
-		require.NoError(t, readErr, "format golden %s", golden.relativePath)
-		got, readErr = format.Source(got)
-		require.NoError(t, readErr, "format autofixed source %s", golden.relativePath)
-		require.Equal(t, string(want), string(got), "autofixed source differs from existing golden %s", golden.relativePath)
+	firstFix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
+	require.Equal(t, 1, firstFix.exitCode, "expected only the outer nested candidate to remain after the first --fix pass; stdout:\n%s\nstderr:\n%s", firstFix.stdout, firstFix.stderr)
+	firstIssues := decodeBundleIssues(t, firstFix)
+	remainingOuterCandidate := false
+	for _, issue := range firstIssues {
+		if issue.FromLinter == "justtrack" &&
+			strings.HasSuffix(filepath.ToSlash(issue.Pos.Filename), "testlintdata/inlineinteraction/inlineinteraction.go") {
+			remainingOuterCandidate = true
+		}
 	}
+	require.True(t, remainingOuterCandidate, "expected the overlapping outer iferrinline candidate to remain after the inner okinline fix")
+
+	firstPassSourcePath := filepath.Join(fixtureCopy, "inlineinteraction", "inlineinteraction.go")
+	firstPassSource, readErr := os.ReadFile(firstPassSourcePath)
+	require.NoError(t, readErr)
+	require.Contains(t, string(firstPassSource), "value, err := func()")
+	require.Contains(t, string(firstPassSource), "if ok := flag; !ok")
 
 	buildArgs := append([]string{"build"}, fixablePackages...)
+	firstBuild := runBundleCommand(t, "go", buildArgs, sourceRoot, env)
+	require.Equal(t, 0, firstBuild.exitCode, "expected the source after the first --fix pass to compile; stdout:\n%s\nstderr:\n%s", firstBuild.stdout, firstBuild.stderr)
+
+	fix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
+	require.Equal(t, 0, fix.exitCode, "expected no remaining findings after the second --fix pass; stdout:\n%s\nstderr:\n%s", fix.stdout, fix.stderr)
+
 	build := runBundleCommand(t, "go", buildArgs, sourceRoot, env)
 	require.Equal(t, 0, build.exitCode, "expected autofixed fixture packages to compile; stdout:\n%s\nstderr:\n%s", build.stdout, build.stderr)
 
@@ -93,12 +102,12 @@ func TestBundle(t *testing.T) {
 
 type bundleGolden struct {
 	relativePath string
-	goldenPath   string
 	packagePath  string
 }
 
 type bundleLintIssue struct {
 	FromLinter string `json:"FromLinter"`
+	Text       string `json:"Text"`
 	Pos        struct {
 		Filename string `json:"Filename"`
 		Line     int    `json:"Line"`
@@ -136,7 +145,6 @@ func collectBundleGoldens(t *testing.T, fixtureRoot string) []bundleGolden {
 
 		goldens = append(goldens, bundleGolden{
 			relativePath: relativePath,
-			goldenPath:   path,
 			packagePath:  "./" + filepath.ToSlash(filepath.Join("testlintdata", filepath.Dir(relativePath))),
 		})
 

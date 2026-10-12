@@ -24,7 +24,7 @@ type client struct{}
 
 func (*client) Exec() error           { return nil }
 func (*client) Close() error          { return nil }
-func ProvideClient() (*client, error) { return &client{}, nil }
+func ProvideClient() (Client, error) { return &client{}, nil }
 
 type private struct{}
 
@@ -32,3 +32,15 @@ func (*private) Exec() error  { return nil }
 func (*private) Extra() error { return nil }
 
 func NewPrivate() (*private, error) { return &private{}, nil }
+
+type anonymousPrivateValue struct{}
+
+func (anonymousPrivateValue) privateMethod() {}
+
+func PrivateInterface() (interface{ privateMethod() }, error) {
+	return anonymousPrivateValue{}, nil
+}
+
+func PrivateStruct() (struct{ privateField int }, error) {
+	return struct{ privateField int }{privateField: 1}, nil
+}
