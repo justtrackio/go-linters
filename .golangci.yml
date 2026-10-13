@@ -8,5 +8,5 @@ linters:
     custom:
       justtrack:
         type: module
-        description: runs the JustTrack custom analyzers
+        description: runs the justtrack company rules
         original-url: github.com/justtrackio/go-linters

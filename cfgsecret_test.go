@@ -16,6 +16,7 @@ func TestCfgSecret(t *testing.T) {
 	analyzers, err := plugin.BuildAnalyzers()
 	require.NoError(t, err)
 	results := analysistest.Run(t, testdataDir(t), analyzers[0], "testlintdata/cfgsecret")
+
 	for _, result := range results {
 		for _, diagnostic := range result.Diagnostics {
 			require.Empty(t, diagnostic.SuggestedFixes, "credential classification must not change source")

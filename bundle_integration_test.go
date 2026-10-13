@@ -94,9 +94,11 @@ func TestBundleCfgSecretDoesNotFix(t *testing.T) {
 	require.Equal(t, 1, fixed.exitCode, "report-only findings must remain; stdout:\n%s\nstderr:\n%s", fixed.stdout, fixed.stderr)
 	issues := decodeBundleIssues(t, fixed)
 	require.Len(t, issues, 19)
+
 	for _, issue := range issues {
 		require.Equal(t, "cfgsecret", issue.FromLinter)
 	}
+
 	after, err := os.ReadFile(filename)
 	require.NoError(t, err)
 	require.Equal(t, source, after, "--fix must not modify credential tags")
@@ -109,6 +111,7 @@ func TestBundleSelectiveInlineRules(t *testing.T) {
 	require.NotEmpty(t, binary)
 	require.True(t, filepath.IsAbs(binary))
 	fixtures := append(selectiveInlineFixtures(), struct{ name, source string }{"import-alias-collision", selectiveInlineImportSource})
+
 	for _, fixture := range fixtures {
 		for _, selection := range [][]string{{"iferrinline"}, {"okinline"}, {"iferrinline", "okinline"}, {"okinline", "iferrinline"}, {"justtrack"}} {
 			t.Run(fixture.name+"/"+strings.Join(selection, "+"), func(t *testing.T) {
@@ -116,31 +119,39 @@ func TestBundleSelectiveInlineRules(t *testing.T) {
 				if fixture.name == "import-alias-collision" {
 					writeInlineSharedImportDependencies(t, sourceRoot)
 				}
+
 				config := writeInlineBundleConfig(t, workspace, selection)
 				before := runBundleCommand(t, binary, inlineBundleArgs(config, false), sourceRoot, env)
 				require.Equal(t, 1, before.exitCode, "stdout:\n%s\nstderr:\n%s", before.stdout, before.stderr)
 				issues := decodeBundleIssues(t, before)
 				expectedIssues := len(selection)
+
 				if selection[0] == "justtrack" {
 					expectedIssues = 2
 				}
+
 				require.Len(t, issues, expectedIssues)
 				for _, issue := range issues {
 					require.Contains(t, selection, issue.FromLinter)
 				}
+
 				passes := 1
 				if len(selection) == 2 {
 					passes = 2
 				}
+
 				runInlineBundleFixes(t, binary, config, sourceRoot, env, passes)
 				contents, err := os.ReadFile(filename)
 				require.NoError(t, err)
+
 				aggregate := selection[0] == "justtrack"
 				if aggregate {
 					require.Equal(t, fixture.source, string(contents))
 				}
+
 				assertInlineBundleInitializers(t, contents, slices.Contains(selection, "iferrinline"), slices.Contains(selection, "okinline"))
 				after := runBundleCommand(t, binary, inlineBundleArgs(config, false), sourceRoot, env)
+
 				if aggregate {
 					require.Equal(t, 1, after.exitCode, "stdout:\n%s\nstderr:\n%s", after.stdout, after.stderr)
 					require.Len(t, decodeBundleIssues(t, after), 2)
@@ -158,6 +169,7 @@ func TestBundleInlineSelectionCacheIsolation(t *testing.T) {
 	require.NotEmpty(t, binary)
 	require.True(t, filepath.IsAbs(binary))
 	standalone := []string{"cfgsecret", "noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "recvaftertype"}
+
 	for _, direction := range []struct {
 		name         string
 		warm, target []string
@@ -177,20 +189,26 @@ func TestBundleInlineSelectionCacheIsolation(t *testing.T) {
 			require.Equal(t, 1, selected.exitCode, "stdout:\n%s\nstderr:\n%s", selected.stdout, selected.stderr)
 			issues := decodeBundleIssues(t, selected)
 			require.Len(t, issues, 2)
+
 			for _, issue := range issues {
 				require.Contains(t, direction.target, issue.FromLinter)
 			}
+
 			aggregate := direction.target[0] == "justtrack"
 			passes := 2
+
 			if aggregate {
 				passes = 1
 			}
+
 			runInlineBundleFixes(t, binary, config, sourceRoot, env, passes)
 			contents, err := os.ReadFile(filename)
 			require.NoError(t, err)
+
 			if aggregate {
 				require.Equal(t, selectiveInlineSiblingSource, string(contents))
 			}
+
 			assertInlineBundleInitializers(t, contents, !aggregate, !aggregate)
 		})
 	}
@@ -202,9 +220,11 @@ func inlineBundleWorkspace(t *testing.T, source string) (workspace, sourceRoot, 
 	gopath := filepath.Join(workspace, "gopath")
 	sourceRoot = filepath.Join(gopath, "src")
 	filename = filepath.Join(sourceRoot, "fixture", "fixture.go")
+
 	for _, directory := range []string{filepath.Dir(filename), filepath.Join(workspace, "home"), filepath.Join(workspace, "tmp"), filepath.Join(workspace, "gocache"), filepath.Join(workspace, "lintcache")} {
 		require.NoError(t, os.MkdirAll(directory, 0o755))
 	}
+
 	require.NoError(t, os.WriteFile(filename, []byte(source), 0o644))
 	env = append(bundleTestEnv(workspace, gopath), "GOLANGCI_LINT_CACHE="+filepath.Join(workspace, "lintcache"))
 	return workspace, sourceRoot, filename, env
@@ -213,13 +233,16 @@ func inlineBundleWorkspace(t *testing.T, source string) (workspace, sourceRoot, 
 func writeInlineBundleConfig(t *testing.T, workspace string, selection []string) string {
 	t.Helper()
 	config := "version: \"2\"\nlinters:\n  default: none\n  enable:\n"
+
 	for _, plugin := range selection {
 		config += "    - " + plugin + "\n"
 	}
+
 	config += "  settings:\n    custom:\n"
 	for _, plugin := range []string{"justtrack", "cfgsecret", "noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "recvaftertype"} {
 		config += "      " + plugin + ":\n        type: module\n        description: inline regression\n        original-url: github.com/justtrackio/go-linters\n"
 	}
+
 	path := filepath.Join(workspace, "golangci.yml")
 	require.NoError(t, os.WriteFile(path, []byte(config), 0o644))
 	return path
@@ -249,10 +272,13 @@ func assertInlineBundleInitializers(t *testing.T, source []byte, errorInlined, b
 	require.NoError(t, err)
 	errorChecks, booleanChecks := 0, 0
 	ast.Inspect(file, func(node ast.Node) bool {
-		check, ok := node.(*ast.IfStmt)
-		if !ok {
+		var ok bool
+		var check *ast.IfStmt
+
+		if check, ok = node.(*ast.IfStmt); !ok {
 			return true
 		}
+
 		switch condition := check.Cond.(type) {
 		case *ast.BinaryExpr:
 			if name, ok := condition.X.(*ast.Ident); ok && name.Name == "err" {
@@ -265,6 +291,7 @@ func assertInlineBundleInitializers(t *testing.T, source []byte, errorInlined, b
 				require.Equal(t, booleanInlined, check.Init != nil)
 			}
 		}
+
 		return true
 	})
 	require.Equal(t, 1, errorChecks)
@@ -276,8 +303,10 @@ func assertInlineGuardManualIssues(t *testing.T, issues []bundleLintIssue) {
 	expected := map[string]int{"iferrinline": 2, "okinline": 2}
 	require.Len(t, issues, 5)
 	privateWithoutInterface := false
+
 	for _, issue := range issues {
 		require.Equal(t, "justtrack", issue.FromLinter)
+
 		filename := filepath.ToSlash(issue.Pos.Filename)
 		if strings.HasSuffix(filename, "testlintdata/iferrinline/iferrinline.go") {
 			// Upstream already omitted this fix: the private concrete result
@@ -292,8 +321,10 @@ func assertInlineGuardManualIssues(t *testing.T, issues []bundleLintIssue) {
 			require.Positive(t, expected[rule], "unexpected manual finding from %s", rule)
 			expected[rule]--
 		}
+
 		require.Contains(t, issue.Text, "manual fix required")
 	}
+
 	require.True(t, privateWithoutInterface)
 	for _, remaining := range expected {
 		require.Zero(t, remaining)

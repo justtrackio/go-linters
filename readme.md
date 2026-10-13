@@ -10,10 +10,12 @@ Each archive contains an executable named `golangci-lint`.
 Select the bundle through its full backend name in the target repository's `mise.toml`:
 
 ```toml
+[settings]
+# Disable the inherited upstream tool while retaining the full-backend bundle.
+disable_tools = ["golangci-lint"]
+
 [tools]
-# Disable an inherited upstream golangci-lint tool.
-golangci-lint = []
-"github:justtrackio/go-linters" = "0.3.0"
+"github:justtrackio/go-linters" = "0.4.0"
 ```
 
 The version selects a **go-linters release**, not an upstream golangci-lint release.
@@ -81,6 +83,9 @@ cd /path/to/some/other/repo
 
 ## Build and check the bundle
 
+The root `mise.toml` selects the published `github:justtrackio/go-linters` release for normal local linting.
+The bundle task deliberately uses the upstream Aqua runner instead, so a released bundle is never used to rebuild itself:
+
 ```sh
 mise install
 mise run test
@@ -88,12 +93,26 @@ mise run bundle
 mise run test-bundle
 ```
 
-`.custom-gcl.yml` pins the embedded golangci-lint version and imports this local checkout.
+`mise run bundle` installs `aqua:golangci/golangci-lint@2.13.1` and invokes the
+binary returned by `mise which golangci-lint --tool aqua:golangci/golangci-lint@2.13.1`.
+The build task does not resolve its runner through PATH.
+`.custom-gcl.yml` pins the upstream version and imports this local checkout.
 The custom binary is written to `./bin/golangci-lint`.
 Analyzer tests use `analysistest` with checked-in Go fixtures and expected fix outputs.
 The Go bundle integration test reuses these fixtures to check diagnostics and real `--fix` behavior.
 It compiles the actual corrected packages and checks that only the expected
 manual-fix diagnostics remain. Per-rule tests check the exact golden output.
+
+For self-linting, run this command from the checkout:
+
+```sh
+mise exec -- golangci-lint run --build-tags integration,fixtures \
+  --max-issues-per-linter=0 --max-same-issues=0 --uniq-by-line=false ./...
+```
+
+This includes integration tests and reports all findings. The repository's
+`.golangci.yml` enables the company rules. Analyzer source and tests must pass
+without suppressions or changes to the test fixtures.
 
 Run the custom binary from the project that you want to lint:
 
@@ -117,7 +136,7 @@ The release job uploads the archives and `SHA256SUMS` to GitHub.
 Pull requests and main-branch pushes build archives without publishing releases.
 
 The bundle release version and embedded golangci-lint version are separate.
-Keep the builder pin in `mise.toml`, the version in `.custom-gcl.yml`,
+Keep the upstream builder pin in the `mise.toml` bundle task, the embedded version in `.custom-gcl.yml`,
 and the upstream license URL in the workflow aligned when upgrading golangci-lint.
 Each archive includes the upstream runner's GPLv3 license as `LICENSE.golangci-lint`.
 
