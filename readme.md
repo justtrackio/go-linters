@@ -10,9 +10,11 @@ Each archive contains an executable named `golangci-lint`.
 Select the bundle through its full backend name in the target repository's `mise.toml`:
 
 ```toml
+[settings]
+# Disable the inherited upstream tool while retaining the full-backend bundle.
+disable_tools = ["golangci-lint"]
+
 [tools]
-# Disable an inherited upstream golangci-lint tool.
-golangci-lint = []
 "github:justtrackio/go-linters" = "0.4.0"
 ```
 
