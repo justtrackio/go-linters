@@ -1,6 +1,6 @@
 # go-linters
 
-Custom golangci-lint bundle containing the `funcmethod`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `recvaftertype` analyzers.
+Custom golangci-lint bundle containing the `cfgsecret`, `funcmethod`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `recvaftertype` analyzers.
 
 ## Install with mise
 
@@ -63,6 +63,7 @@ New releases can introduce lint failures on unchanged branches.
 
 | Rule | Autofix support |
 | --- | --- |
+| `cfgsecret` | No |
 | `funcmethod` | No |
 | `iferrinline` | **Yes**, when a safe fix can be generated |
 | `methodfilecheck` | No |
@@ -119,6 +120,54 @@ The bundle release version and embedded golangci-lint version are separate.
 Keep the builder pin in `mise.toml`, the version in `.custom-gcl.yml`,
 and the upstream license URL in the workflow aligned when upgrading golangci-lint.
 Each archive includes the upstream runner's GPLv3 license as `LICENSE.golangci-lint`.
+
+## cfgsecret
+
+**Autofix: No.**
+
+Reports exported fields with a `cfg` tag when the field name or config key
+looks like a credential but the tag has no `secret` option:
+
+```go
+type ClientSettings struct {
+    APIKey string `cfg:"api_key"`        // reported
+    Password string `cfg:"password,secret"` // redacted
+    AccessKeyID string `cfg:"access_key_id"` // public identifier
+}
+```
+
+Add `secret` manually when the field contains credentials. Gosoline accepts
+`cfg:"name,secret"`, including an empty name, whitespace around options, and
+case-insensitive `secret`. A key named `secret` is not a redaction option.
+Other tags, `secrets`, or `secret=true` do not enable redaction.
+
+The rule removes separators and ignores case for name matching. For a dotted
+config selector it checks the last component. It reports names ending in
+`password`, `passwd`, `passphrase`, `secret`, `privatekey`, `apikey`, `secretkey`,
+`secretaccesskey`, or `signingkey`. It also reports these complete names:
+
+- `token`, `authtoken`, `accesstoken`, `refreshtoken`, `sessiontoken`,
+  `bearertoken`, `apitoken`, `clienttoken`, `idtoken`, `jwttoken`,
+  `personalaccesstoken`;
+- `authorization`, `proxyauthorization`, `authkeys`, `apiauthkeys`,
+  `basicauthusers`, `apiauthbasicusers`.
+
+Public keys, access-key IDs, secret names/ARNs/files, token expiry/URLs/counts,
+and pagination/continuation tokens do not match these rules. Generic `headers`
+maps are not classified as credentials. If a map contains authorization headers
+or other secrets, annotate it manually.
+
+Untagged and unexported fields are outside the rule. A secret parent covers its
+inline struct subtree, including pointers, arrays, slices, and maps. Named
+struct types are checked independently because another config path can reuse
+them without a secret parent. Gosoline ignores tag options on embedded fields;
+annotate their mapped child fields instead.
+
+This is a name-based check, not a proof that all secrets are protected. Opaque
+names, credentials inside URLs, and raw getter values need manual review.
+The rule does not prove that types were registered before config logging.
+For a non-secret value with a credential-like name, use a narrow
+`//nolint:cfgsecret` with a reason. `--fix` never changes its tags.
 
 ## funcmethod
 

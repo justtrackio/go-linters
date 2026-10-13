@@ -21,6 +21,7 @@ func (*JustTrackPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	var err error
 
 	constructors := []func(any) (register.LinterPlugin, error){
+		NewCfgSecret,
 		NewNoAnonStruct,
 		NewFuncMethod,
 		NewMethodFileCheck,
