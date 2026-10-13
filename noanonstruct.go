@@ -15,10 +15,6 @@ func init() {
 // NoAnonStructPlugin requires names for non-empty struct types outside tests.
 type NoAnonStructPlugin struct{}
 
-func NewNoAnonStruct(_ any) (register.LinterPlugin, error) {
-	return &NoAnonStructPlugin{}, nil
-}
-
 func (p *NoAnonStructPlugin) GetLoadMode() string {
 	return register.LoadModeSyntax
 }
@@ -29,6 +25,10 @@ func (p *NoAnonStructPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		Doc:  "reports non-empty anonymous structs outside test files",
 		Run:  runNoAnonStruct,
 	}}, nil
+}
+
+func NewNoAnonStruct(_ any) (register.LinterPlugin, error) {
+	return &NoAnonStructPlugin{}, nil
 }
 
 func runNoAnonStruct(pass *analysis.Pass) (any, error) {
@@ -46,6 +46,7 @@ func runNoAnonStruct(pass *analysis.Pass) (any, error) {
 					declared[st] = true
 				}
 			}
+
 			return true
 		})
 		ast.Inspect(file, func(node ast.Node) bool {
@@ -53,8 +54,10 @@ func runNoAnonStruct(pass *analysis.Pass) (any, error) {
 			if ok && !declared[st] && st.Fields != nil && len(st.Fields.List) > 0 {
 				pass.Reportf(st.Pos(), "non-empty anonymous struct: define a named type instead")
 			}
+
 			return true
 		})
 	}
+
 	return nil, nil
 }

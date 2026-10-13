@@ -1,0 +1,224 @@
+package okinline
+
+import "testlintdata/iferrinline/widget"
+
+func normalize() (string, bool) { return "event", true }
+func use(string)                {}
+func check() bool               { return true }
+
+func EventUsedAfter() string {
+	var ok bool
+	var event string
+
+	if event, ok = normalize(); !ok {
+		return "not configured"
+	}
+
+	return event
+}
+
+func EventOnlyInIf() {
+	if event, ok := normalize(); !ok {
+		use(event)
+	}
+}
+
+func PositiveCheck() {
+	if event, ok := normalize(); ok {
+		use(event)
+	} else {
+		use(event)
+	}
+}
+
+func BlankCompanion() {
+	if _, ok := normalize(); !ok {
+		return
+	}
+}
+
+func BooleanOnly() {
+	if ok := check(); !ok {
+		return
+	}
+}
+
+func AssignmentUsedAfter() bool {
+	var event string
+	var ok bool
+	if event, ok = normalize(); !ok {
+		return ok
+	}
+	use(event)
+	return ok
+}
+
+func BothUsedAfter() (string, bool) {
+	var ok bool
+	var event string
+
+	if event, ok = normalize(); !ok {
+		return "", ok
+	}
+
+	return event, ok
+}
+
+func ExistingVar() string {
+	var ok bool
+	var event string
+	if event, ok = normalize(); !ok {
+		return ""
+	}
+
+	return event
+}
+
+func Parameter(event string) string {
+	var ok bool
+
+	if event, ok = normalize(); !ok {
+		return ""
+	}
+
+	return event
+}
+
+func Consecutive() {
+	var ok bool
+	var first string
+	var second string
+
+	if first, ok = normalize(); !ok {
+		return
+	}
+
+	if second, ok = normalize(); !ok {
+		return
+	}
+
+	use(first)
+	use(second)
+}
+
+func MapLookup(events map[string]string) string {
+	var ok bool
+	var event string
+
+	if event, ok = events["event"]; !ok {
+		return ""
+	}
+
+	return event
+}
+
+func TypeAssertion(value any) {
+	if event, ok := value.(string); !ok {
+		use(event)
+	}
+}
+
+func ChannelReceive(events <-chan string) string {
+	var ok bool
+	var event string
+
+	if event, ok = <-events; !ok {
+		return ""
+	}
+
+	return event
+}
+
+func Parenthesized() {
+	if ok := check(); !(ok) {
+		return
+	}
+}
+
+func Nested() {
+	var ok bool
+	var event string
+
+	for i := 0; i < 2; i++ {
+		if event, ok = normalize(); !ok {
+			return
+		}
+
+		use(event)
+	}
+}
+
+func widgetOK() (*widget.Service, bool) { return nil, true }
+
+func PackageShadow() *widget.Service {
+	var ok bool
+	var service *widget.Service
+
+	_ = widget.Service{}
+	if service, ok = widgetOK(); !ok {
+		return nil
+	}
+
+	return service
+}
+
+func AlreadyInline() {
+	if event, ok := normalize(); !ok {
+		use(event)
+	}
+}
+
+func OkOnlyUsedAfter() bool {
+	ok := check()
+	if !ok {
+		return false
+	}
+	return ok
+}
+
+func DifferentName() {
+	event, found := normalize()
+	if !found {
+		use(event)
+	}
+}
+
+func DifferentCondition() {
+	event, ok := normalize()
+	if event == "" {
+		use(event)
+	}
+	_ = ok
+}
+
+func CompoundCondition() {
+	event, ok := normalize()
+	if !ok || event == "" {
+		return
+	}
+}
+
+func InterveningStatement() {
+	event, ok := normalize()
+	use(event)
+	if !ok {
+		return
+	}
+}
+
+func ExistingIfInit() {
+	event, ok := normalize()
+	if other := check(); !ok {
+		use(event)
+		_ = other
+	}
+}
+
+func MultiLine() {
+	event, ok := func() (string, bool) {
+		return normalize()
+	}()
+	if !ok {
+		use(event)
+	}
+}

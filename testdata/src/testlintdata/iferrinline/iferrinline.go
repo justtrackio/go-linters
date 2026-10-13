@@ -33,7 +33,7 @@ func ErrUsedAfter() error {
 }
 
 func NotErrName() error {
-	e := boom()
+	e := boom() // want "if e can be inlined into the assignment"
 	if e != nil {
 		return e
 	}
@@ -203,4 +203,57 @@ func ParamErrNestedBlock(err error) error {
 		use(i)
 	}
 	return err
+}
+
+func AssignErrUsedAfter() error {
+	var err error
+	err = boom() // want "if err can be inlined into the assignment"
+	if err != nil {
+		return err
+	}
+	return err
+}
+
+func four() (int, bool, string, error) { return 0, false, "", nil }
+
+func AssignMultiBlankUsedAfter() error {
+	var status int
+	var err error
+	status, _, _, err = four() // want "if err can be inlined into the assignment"
+	if err != nil {
+		return wrap(err)
+	}
+	use(status)
+	return err
+}
+
+func AssignNamedReturn() (status int, err error) {
+	status, err = bar() // want "if err can be inlined into the assignment"
+	if err != nil {
+		return
+	}
+	return
+}
+
+type clientHolder struct{ client widget.Querier }
+
+func PrivateClient() (*clientHolder, error) {
+	client, err := widget.ProvideClient() // want "if err can be inlined by hoisting client to var declarations at the top of the function and changing := to ="
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	if err := client.Exec(); err != nil {
+		return nil, err
+	}
+	return &clientHolder{client: client}, nil
+}
+
+func PrivateWithoutInterface() error {
+	value, err := widget.NewPrivate() // want "if err can be inlined by hoisting value to var declarations at the top of the function and changing := to ="
+	if err != nil {
+		return err
+	}
+	_ = value
+	return nil
 }
