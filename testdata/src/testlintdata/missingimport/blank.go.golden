@@ -6,12 +6,12 @@ import (
 )
 
 func Blank() (int, error) {
-	var value time.Duration
-	var err error
-	// want "if err can be inlined by declaring value, err before the assignment and changing := to ="
-	if value, err = widget.Duration(); err != nil {
-		return 0, err
-	}
+ var err error
+ var value time.Duration
 
-	return int(value), nil
+ if value, err = widget.Duration(); err != nil {
+  return 0, err
+ }
+
+ return int(value), nil
 }

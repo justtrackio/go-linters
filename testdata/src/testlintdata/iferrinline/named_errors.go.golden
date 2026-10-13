@@ -55,11 +55,10 @@ func NamedErrorAssignment() error {
 
 func NamedErrorWithCompanionInLoop(items []int) ([]int, error) {
 	var err error
+	var view int
+	var convErr error
 	applications := make([]int, 0, len(items))
 	for _, item := range items {
-		var view int
-		var convErr error
-		// want "if convErr can be inlined by declaring view, convErr before the assignment and changing := to ="
 		if view, convErr = bar(); convErr != nil {
 			return nil, wrap(convErr)
 		}

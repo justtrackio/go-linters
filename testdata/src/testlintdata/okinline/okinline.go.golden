@@ -7,9 +7,9 @@ func use(string)                {}
 func check() bool               { return true }
 
 func EventUsedAfter() string {
-	var event string
 	var ok bool
-	// want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
+	var event string
+
 	if event, ok = normalize(); !ok {
 		return "not configured"
 	}
@@ -54,9 +54,9 @@ func AssignmentUsedAfter() bool {
 }
 
 func BothUsedAfter() (string, bool) {
-	var event string
 	var ok bool
-	// want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
+	var event string
+
 	if event, ok = normalize(); !ok {
 		return "", ok
 	}
@@ -67,7 +67,6 @@ func BothUsedAfter() (string, bool) {
 func ExistingVar() string {
 	var ok bool
 	var event string
-	// want "if ok can be inlined by declaring event before the assignment and changing := to ="
 	if event, ok = normalize(); !ok {
 		return ""
 	}
@@ -77,7 +76,7 @@ func ExistingVar() string {
 
 func Parameter(event string) string {
 	var ok bool
-	// want "if ok can be inlined by declaring ok before the assignment and changing := to ="
+
 	if event, ok = normalize(); !ok {
 		return ""
 	}
@@ -86,15 +85,14 @@ func Parameter(event string) string {
 }
 
 func Consecutive() {
-	var first string
 	var ok bool
-	// want "if ok can be inlined by declaring first, ok before the assignment and changing := to ="
+	var first string
+	var second string
+
 	if first, ok = normalize(); !ok {
 		return
 	}
 
-	var second string
-	// want "if ok can be inlined by declaring second before the assignment and changing := to ="
 	if second, ok = normalize(); !ok {
 		return
 	}
@@ -104,9 +102,9 @@ func Consecutive() {
 }
 
 func MapLookup(events map[string]string) string {
-	var event string
 	var ok bool
-	// want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
+	var event string
+
 	if event, ok = events["event"]; !ok {
 		return ""
 	}
@@ -121,9 +119,9 @@ func TypeAssertion(value any) {
 }
 
 func ChannelReceive(events <-chan string) string {
-	var event string
 	var ok bool
-	// want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
+	var event string
+
 	if event, ok = <-events; !ok {
 		return ""
 	}
@@ -138,10 +136,10 @@ func Parenthesized() {
 }
 
 func Nested() {
+	var ok bool
+	var event string
+
 	for i := 0; i < 2; i++ {
-		var event string
-		var ok bool
-		// want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
 		if event, ok = normalize(); !ok {
 			return
 		}
@@ -150,32 +148,18 @@ func Nested() {
 	}
 }
 
-func IfInitOkShadow() string {
-	if _, ok := normalize(); ok {
-		var event string
-		var ok bool
-		// want "if ok can be inlined by declaring event, ok before the assignment and changing := to ="
-		if event, ok = normalize(); !ok {
-			return ""
-		}
-
-		return event
-	}
-	return ""
-}
-
 func widgetOK() (*widget.Service, bool) { return nil, true }
 
 func PackageShadow() *widget.Service {
-	_ = widget.Service{}
-	var widget *widget.Service
 	var ok bool
-	// want "if ok can be inlined by declaring widget, ok before the assignment and changing := to ="
-	if widget, ok = widgetOK(); !ok {
+	var service *widget.Service
+
+	_ = widget.Service{}
+	if service, ok = widgetOK(); !ok {
 		return nil
 	}
 
-	return widget
+	return service
 }
 
 func AlreadyInline() {

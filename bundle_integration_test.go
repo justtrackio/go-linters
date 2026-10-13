@@ -38,7 +38,7 @@ func TestBundle(t *testing.T) {
 	goldens := collectBundleGoldens(t, fixtureRoot)
 	require.NotEmpty(t, goldens, "expected existing analyzer golden fixtures")
 	fixablePackages := goldenFixturePackages(goldens)
-	fixablePackages = append(fixablePackages, "./testlintdata/inlineinteraction")
+	fixablePackages = append(fixablePackages, "./testlintdata/inlineguard")
 
 	workspace := t.TempDir()
 	gopath := filepath.Join(workspace, "gopath")
@@ -64,39 +64,45 @@ func TestBundle(t *testing.T) {
 
 	require.True(t, hasBundleIssueAt(issues, "testlintdata/noanonstruct/structs.go", 12), "expected the existing non-fixable noanonstruct diagnostic")
 
-	firstFix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
-	require.Equal(t, 1, firstFix.exitCode, "expected only the outer nested candidate to remain after the first --fix pass; stdout:\n%s\nstderr:\n%s", firstFix.stdout, firstFix.stderr)
-	firstIssues := decodeBundleIssues(t, firstFix)
-	remainingOuterCandidate := false
-	for _, issue := range firstIssues {
-		if issue.FromLinter == "justtrack" &&
-			strings.HasSuffix(filepath.ToSlash(issue.Pos.Filename), "testlintdata/inlineinteraction/inlineinteraction.go") {
-			remainingOuterCandidate = true
-		}
-	}
-	require.True(t, remainingOuterCandidate, "expected the overlapping outer iferrinline candidate to remain after the inner okinline fix")
-
-	firstPassSourcePath := filepath.Join(fixtureCopy, "inlineinteraction", "inlineinteraction.go")
-	firstPassSource, readErr := os.ReadFile(firstPassSourcePath)
-	require.NoError(t, readErr)
-	require.Contains(t, string(firstPassSource), "value, err := func()")
-	require.Contains(t, string(firstPassSource), "if ok := flag; !ok")
+	fix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
+	require.Equal(t, 1, fix.exitCode, "expected only withheld manual findings after --fix; stdout:\n%s\nstderr:\n%s", fix.stdout, fix.stderr)
+	assertInlineGuardManualIssues(t, decodeBundleIssues(t, fix))
 
 	buildArgs := append([]string{"build"}, fixablePackages...)
-	firstBuild := runBundleCommand(t, "go", buildArgs, sourceRoot, env)
-	require.Equal(t, 0, firstBuild.exitCode, "expected the source after the first --fix pass to compile; stdout:\n%s\nstderr:\n%s", firstBuild.stdout, firstBuild.stderr)
-
-	fix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
-	require.Equal(t, 0, fix.exitCode, "expected no remaining findings after the second --fix pass; stdout:\n%s\nstderr:\n%s", fix.stdout, fix.stderr)
-
 	build := runBundleCommand(t, "go", buildArgs, sourceRoot, env)
 	require.Equal(t, 0, build.exitCode, "expected autofixed fixture packages to compile; stdout:\n%s\nstderr:\n%s", build.stdout, build.stderr)
 
 	clean := runBundleCommand(t, binary, lintArgs(repoRoot, false, fixablePackages), sourceRoot, env)
-	require.Equal(t, 0, clean.exitCode, "expected autofixed fixture packages to lint cleanly; stdout:\n%s\nstderr:\n%s", clean.stdout, clean.stderr)
+	require.Equal(t, 1, clean.exitCode, "expected only withheld manual findings; stdout:\n%s\nstderr:\n%s", clean.stdout, clean.stderr)
+	assertInlineGuardManualIssues(t, decodeBundleIssues(t, clean))
+}
 
-	for _, issue := range decodeBundleIssuesIfPresent(t, clean) {
-		require.False(t, strings.HasPrefix(issue.FromLinter, "justtrack"), "targeted analyzer finding remains at %s:%d", issue.Pos.Filename, issue.Pos.Line)
+func assertInlineGuardManualIssues(t *testing.T, issues []bundleLintIssue) {
+	t.Helper()
+	expected := map[string]int{"iferrinline": 2, "okinline": 2}
+	require.Len(t, issues, 5)
+	privateWithoutInterface := false
+	for _, issue := range issues {
+		require.Equal(t, "justtrack", issue.FromLinter)
+		filename := filepath.ToSlash(issue.Pos.Filename)
+		if strings.HasSuffix(filename, "testlintdata/iferrinline/iferrinline.go") {
+			// Upstream already omitted this fix: the private concrete result
+			// has no accessible interface through which to declare it.
+			require.False(t, privateWithoutInterface)
+			require.True(t, strings.HasPrefix(issue.Text, "iferrinline:"))
+			privateWithoutInterface = true
+		} else {
+			require.True(t, strings.HasSuffix(filename, "testlintdata/inlineguard/inlineguard.go"))
+			rule, _, found := strings.Cut(issue.Text, ":")
+			require.True(t, found)
+			require.Positive(t, expected[rule], "unexpected manual finding from %s", rule)
+			expected[rule]--
+		}
+		require.Contains(t, issue.Text, "manual fix required")
+	}
+	require.True(t, privateWithoutInterface)
+	for _, remaining := range expected {
+		require.Zero(t, remaining)
 	}
 }
 

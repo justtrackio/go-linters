@@ -91,8 +91,8 @@ mise run test-bundle
 The custom binary is written to `./bin/golangci-lint`.
 Analyzer tests use `analysistest` with checked-in Go fixtures and expected fix outputs.
 The Go bundle integration test reuses these fixtures to check diagnostics and real `--fix` behavior.
-It compiles corrected packages after each pass and verifies that the aggregate
-rules lint them cleanly. Per-rule tests check the exact golden output separately.
+It compiles the actual corrected packages and checks that only the expected
+manual-fix diagnostics remain. Per-rule tests check the exact golden output.
 
 Run the custom binary from the project that you want to lint:
 
@@ -214,13 +214,14 @@ if err != nil { ... }
 if x, err := bar(); err != nil { ... }
 ```
 
-When a companion variable (e.g. `x`) is used after the `if`, the fix declares
-the new variables immediately before the original assignment, in the same
-block, and switches the assignment to `=`:
+When a companion variable (e.g. `x`) is used after the `if`, the fix hoists the
+variables to declarations at the top of the enclosing function and switches
+the assignment to `=`:
 
 ```go
 var x SomeType
 var err error
+// ...
 if x, err = bar(); err != nil { ... }
 use(x)
 ```
@@ -236,20 +237,22 @@ cd /path/to/some/other/repo
 /path/to/go-linters/bin/golangci-lint run --fix ./...
 ```
 
-The fix preserves existing assignment bindings and initializers. New variables
-stay in their original block, including inside loops and nested conditionals.
-Comments between the assignment and check stay before the rewritten `if`.
+The existing hoisting, declaration ordering, renames, imports, and type rendering
+are unchanged. When an inferred result has a private type from another package,
+the existing fix can use an exported interface that preserves its public methods.
+If no such interface exists or the choice is ambiguous, no automatic fix is offered.
 
-Type information supplies the exact declaration types and any required imports.
-The analyzer leaves a diagnostic without an automatic fix when declarations
-would capture an outer name, a type is inaccessible or shadowed, or the two
-inline rules require incompatible import changes. It does not replace a private
-concrete type with a public interface, because that can change behavior.
+Both `iferrinline` and `okinline` share a compiler-safety check. It applies the
+proposed edits in memory and type-checks the selected package using its loaded
+imports, language version, and target sizes. Edits that cannot be proven
+compiler-safe are withheld; the diagnostic remains and says `manual fix required`.
 
-Nested fixes are applied from the inside out to avoid overlapping source edits.
-Rerun `--fix` for newly exposed fixes, including spacing changes after an inline
-rewrite. Review the changes and compile the affected production and test
-packages before committing them.
+Fixes that share function-level declarations or import edits are checked as a
+group. If the original group cannot compile safely, the group is left unchanged
+rather than generating a different transformation.
+
+This check covers compilation, not semantic equivalence. Review the changes and
+compile the affected production and test packages before committing them.
 
 ## methodfilecheck
 
@@ -440,12 +443,13 @@ if event, ok := NormalizeDenormalizeEventType(s.events, eventType); !ok {
 }
 ```
 
-When `event` is used afterward, it declares the new variables immediately before
-the original assignment, in the same block, and uses `=`:
+When `event` is used afterward, it declares `event` and `ok` at the top of the
+function and uses `=` so the value remains available:
 
 ```go
 var ok bool
 var event EventType
+// ...
 if event, ok = NormalizeDenormalizeEventType(s.events, eventType); !ok {
     return SetupTableStatus{}, newBadRequestError("eventType is not configured")
 }

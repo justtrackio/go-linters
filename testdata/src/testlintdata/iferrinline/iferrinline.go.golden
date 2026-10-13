@@ -67,9 +67,9 @@ func MultiCompanionUnusedAfter() error {
 }
 
 func MultiCompanionUsedAfter() error {
-	var x int
 	var err error
-	// want "if err can be inlined by declaring x, err before the assignment and changing := to ="
+	var x int
+
 	if x, err = bar(); err != nil {
 		return err
 	}
@@ -96,10 +96,10 @@ func three() (string, bool, error) { return "", false, nil }
 func use2(string, bool) {}
 
 func ThreeReturns() error {
-	var s string
 	var ok bool
 	var err error
-	// want "if err can be inlined by declaring s, ok, err before the assignment and changing := to ="
+	var s string
+
 	if s, ok, err = three(); err != nil {
 		return err
 	}
@@ -109,9 +109,9 @@ func ThreeReturns() error {
 }
 
 func MultiErrReused() error {
-	var x int
 	var err error
-	// want "if err can be inlined by declaring x, err before the assignment and changing := to ="
+	var x int
+
 	if x, err = bar(); err != nil {
 		return err
 	}
@@ -123,15 +123,14 @@ func MultiErrReused() error {
 }
 
 func ConsecutiveErrSites() error {
-	var a int
 	var err error
-	// want "if err can be inlined by declaring a, err before the assignment and changing := to ="
+	var a int
+	var b int
+
 	if a, err = bar(); err != nil {
 		return err
 	}
 
-	var b int
-	// want "if err can be inlined by declaring b before the assignment and changing := to ="
 	if b, err = bar(); err != nil {
 		return err
 	}
@@ -144,9 +143,8 @@ func ConsecutiveErrSites() error {
 func ExistingVarBlock() error {
 	var err error
 	var existing int
-
 	var a int
-	// want "if err can be inlined by declaring a before the assignment and changing := to ="
+
 	if a, err = bar(); err != nil {
 		return err
 	}
@@ -156,12 +154,27 @@ func ExistingVarBlock() error {
 	return nil
 }
 
+type holder struct {
+	widget *widget.Service
+}
+
+func PackageShadow() (*holder, error) {
+	var err error
+	var service *widget.Service
+
+	if service, err = widget.New(); err != nil {
+		return nil, err
+	}
+
+	return &holder{widget: service}, nil
+}
+
 func useService(*widget.Service) {}
 
 func ParamShadow(svc *widget.Service) error {
-	useService(svc)
 	var err error
-	// want "if err can be inlined by declaring err before the assignment and changing := to ="
+
+	useService(svc)
 	if svc, err = widget.With(svc); err != nil {
 		return err
 	}
@@ -171,11 +184,10 @@ func ParamShadow(svc *widget.Service) error {
 }
 
 func ExistingVarBlockReorder() error {
-	var x int
 	var err error
-
+	var x int
 	var a int
-	// want "if err can be inlined by declaring a before the assignment and changing := to ="
+
 	if a, err = bar(); err != nil {
 		return err
 	}
@@ -187,10 +199,9 @@ func ExistingVarBlockReorder() error {
 }
 
 func NamedReturnErrNestedBlock(items []int) (err error) {
+	var a int
+
 	for _, item := range items {
-		var a int
-		var err error
-		// want "if err can be inlined by declaring a, err before the assignment and changing := to ="
 		if a, err = bar(); err != nil {
 			return err
 		}
@@ -202,10 +213,9 @@ func NamedReturnErrNestedBlock(items []int) (err error) {
 }
 
 func ParamErrNestedBlock(err error) error {
+	var a int
+
 	for i := 0; i < 3; i++ {
-		var a int
-		var err error
-		// want "if err can be inlined by declaring a, err before the assignment and changing := to ="
 		if a, err = bar(); err != nil {
 			return err
 		}
@@ -246,9 +256,9 @@ func AssignNamedReturn() (status int, err error) {
 type clientHolder struct{ client widget.Querier }
 
 func PrivateClient() (*clientHolder, error) {
-	var client widget.Client
 	var err error
-	// want "if err can be inlined by declaring client, err before the assignment and changing := to ="
+	var client widget.Client
+
 	if client, err = widget.ProvideClient(); err != nil {
 		return nil, err
 	}
@@ -260,129 +270,11 @@ func PrivateClient() (*clientHolder, error) {
 	return &clientHolder{client: client}, nil
 }
 
-func PreserveInitializedBinding() error {
-	var value int = 42
-	var err error
-	// want "if err can be inlined by declaring err before the assignment and changing := to ="
-	if value, err = bar(); err != nil {
+func PrivateWithoutInterface() error {
+	value, err := widget.NewPrivate() // want "if err can be inlined by hoisting value to var declarations at the top of the function and changing := to ="
+	if err != nil {
 		return err
 	}
-
-	use(value)
+	_ = value
 	return nil
 }
-
-func PreserveCapturedErrorBinding() error {
-	var err error
-	observe := func() error { return err }
-	var value int
-	// want "if err can be inlined by declaring value before the assignment and changing := to ="
-	if value, err = bar(); err != nil {
-		return err
-	}
-
-	use(value)
-	return observe()
-}
-
-func NestedErrorBeforeOuterDeclaration() error {
-	{
-		var value int
-		var err error
-		// want "if err can be inlined by declaring value, err before the assignment and changing := to ="
-		if value, err = bar(); err != nil {
-			return err
-		}
-
-		use(value)
-	}
-
-	var err error
-	err = boom()
-	return err
-}
-
-func IfInitBindingShadow() error {
-	if _, err := bar(); err != nil {
-		return err
-	} else {
-		var value int
-		var err error
-		// want "if err can be inlined by declaring value, err before the assignment and changing := to ="
-		if value, err = bar(); err != nil {
-			return err
-		}
-
-		use(value)
-	}
-	return nil
-}
-
-func SiblingBlocks() error {
-	{
-		var value int
-		var err error
-		// want "if err can be inlined by declaring value, err before the assignment and changing := to ="
-		if value, err = bar(); err != nil {
-			return err
-		}
-
-		use(value)
-	}
-	{
-		var value int
-		var err error
-		// want "if err can be inlined by declaring value, err before the assignment and changing := to ="
-		if value, err = bar(); err != nil {
-			return err
-		}
-
-		use(value)
-	}
-	return nil
-}
-
-func LoopShadowingOuterValue(items []int) error {
-	value := 42
-	for _, item := range items {
-		var value int
-		var err error
-		// want "if err can be inlined by declaring value, err before the assignment and changing := to ="
-		if value, err = bar(); err != nil {
-			return err
-		}
-
-		use(value)
-		use(item)
-	}
-	use(value)
-	return nil
-}
-
-func LoopClosures(items []int) []func() int {
-	callbacks := make([]func() int, 0, len(items))
-	for _, item := range items {
-		var value int
-		var err error
-		// want "if err can be inlined by declaring value, err before the assignment and changing := to ="
-		if value, err = bar(); err != nil {
-			continue
-		}
-
-		callbacks = append(callbacks, func() int { return value + item })
-	}
-	return callbacks
-}
-
-func RhsLocalShadow() error {
-	var value int
-	var err error
-	// want "if err can be inlined by declaring value, err before the assignment and changing := to ="
-	if value, err = func(value int) (int, error) { return value, nil }(42); err != nil {
-		return err
-	}
-
-	use(value)
-	return nil
-}
-

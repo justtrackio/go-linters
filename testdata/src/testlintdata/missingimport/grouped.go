@@ -7,7 +7,7 @@ import (
 )
 
 func Grouped() (string, error) {
-	value, err := widget.Duration() // want "if err can be inlined by declaring value, err before the assignment and changing := to ="
+	value, err := widget.Duration() // want "if err can be inlined by hoisting value"
 	if err != nil {
 		return "", err
 	}

@@ -5,10 +5,10 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"maps"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/golangci/plugin-module-register/register"
 	"golang.org/x/tools/go/analysis"
@@ -23,9 +23,10 @@ type IfErrInline struct{}
 func (p *IfErrInline) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	return []*analysis.Analyzer{
 		{
-			Name: "iferrinline",
-			Doc:  "reports error assignments followed by a non-nil check that can be inlined into the if initializer",
-			Run:  p.run,
+			Name:     "iferrinline",
+			Doc:      "reports error assignments followed by a non-nil check that can be inlined into the if initializer",
+			Run:      p.run,
+			Requires: []*analysis.Analyzer{inlineCompilePlanAnalyzer},
 		},
 	}, nil
 }
@@ -35,7 +36,7 @@ func (p *IfErrInline) GetLoadMode() string {
 }
 
 func (p *IfErrInline) run(pass *analysis.Pass) (any, error) {
-	return runInlineCheck(pass, "iferrinline", checkedError, checkedOk)
+	return runInlineCheck(pass, "iferrinline", checkedError)
 }
 
 func NewIfErrInline(_ any) (register.LinterPlugin, error) {
@@ -49,25 +50,21 @@ type candidate struct {
 	assign     *ast.AssignStmt
 	ifStmt     *ast.IfStmt
 	hoistNames []string
+	fnBody     *ast.BlockStmt
+	renames    map[string]string // original LHS name → fresh name (when hoisting would shadow)
 }
 
 type declEdit struct {
-	text string
+	pos, end token.Pos
+	text     string
 }
 
 // runInlineCheck shares scope preservation and suggested fixes between the
 // error and boolean check analyzers.
-func runInlineCheck(pass *analysis.Pass, analyzerName string, checkedVariable, conflictingVariable func(*analysis.Pass, ast.Expr) *ast.Ident) (any, error) {
-	for _, file := range pass.Files {
-		imports := buildImportMap(file)
-		originalImports := maps.Clone(imports)
-		usedImportNames := collectUsedNamesInFile(file)
-
-		candidates := collectInlineCandidates(pass, file, checkedVariable)
-		conflictingCandidates := collectInlineCandidates(pass, file, conflictingVariable)
-		fixes := computeInlineFixes(pass, imports, originalImports, usedImportNames, candidates, conflictingCandidates)
-		importEdits := buildImportEdits(file, originalImports, imports)
-		reportInlineCandidates(pass, analyzerName, candidates, fixes, importEdits)
+func runInlineCheck(pass *analysis.Pass, analyzerName string, _ func(*analysis.Pass, ast.Expr) *ast.Ident) (any, error) {
+	plan := pass.ResultOf[inlineCompilePlanAnalyzer].(*inlineCompilePlan)
+	for _, diagnostic := range plan.diagnostics[analyzerName] {
+		pass.Report(diagnostic)
 	}
 
 	return nil, nil
@@ -84,7 +81,7 @@ func collectInlineCandidates(pass *analysis.Pass, file *ast.File, checkedVariabl
 		}
 
 		for i := 0; i < len(block.List)-1; i++ {
-			if c, ok := matchPattern(pass, block, i, checkedVariable); ok {
+			if c, ok := matchPattern(pass, file, block, i, checkedVariable); ok {
 				candidates = append(candidates, c)
 			}
 		}
@@ -95,173 +92,57 @@ func collectInlineCandidates(pass *analysis.Pass, file *ast.File, checkedVariabl
 	return candidates
 }
 
-func computeInlineFixes(pass *analysis.Pass, imports, originalImports map[string]string, usedImportNames map[string]bool, candidates, conflictingCandidates []candidate) map[*ast.AssignStmt]analysis.SuggestedFix {
-	allCandidates := append(append([]candidate(nil), candidates...), conflictingCandidates...)
-	uniqueCandidates := make([]candidate, 0, len(allCandidates))
-	seen := make(map[*ast.AssignStmt]bool, len(allCandidates))
-	for _, c := range allCandidates {
-		if !seen[c.assign] {
-			seen[c.assign] = true
-			uniqueCandidates = append(uniqueCandidates, c)
+func computeInlineDeclarations(pass *analysis.Pass, file *ast.File, imports map[string]string, usedImportNames map[string]bool, candidates []candidate) map[*ast.BlockStmt]declEdit {
+	hoistByFn := map[*ast.BlockStmt][]int{}
+	for idx, c := range candidates {
+		if len(c.hoistNames) > 0 && c.fnBody != nil {
+			hoistByFn[c.fnBody] = append(hoistByFn[c.fnBody], idx)
 		}
 	}
-	sort.Slice(uniqueCandidates, func(i, j int) bool {
-		return uniqueCandidates[i].assign.Pos() > uniqueCandidates[j].assign.Pos()
-	})
 
-	currentCandidates := make(map[*ast.AssignStmt]bool, len(candidates))
+	declEditByFn := map[*ast.BlockStmt]declEdit{}
 	for _, c := range candidates {
-		currentCandidates[c.assign] = true
-	}
-
-	type proposal struct {
-		fix             analysis.SuggestedFix
-		imports         map[string]string
-		renderedImports map[string]string
-		importChanges   map[string]string
-	}
-
-	proposals := make(map[*ast.AssignStmt]proposal, len(uniqueCandidates))
-	for _, c := range uniqueCandidates {
-		candidateImports := maps.Clone(imports)
-		candidateUsedImportNames := maps.Clone(usedImportNames)
-		fix, renderedImports, ok := buildInlineCandidateFix(pass, candidateImports, candidateUsedImportNames, c)
-		if !ok {
+		fnBody := c.fnBody
+		if _, done := declEditByFn[fnBody]; fnBody == nil || done {
 			continue
 		}
 
-		importChanges := make(map[string]string)
-		for path := range renderedImports {
-			originalAlias, alreadyImported := originalImports[path]
-			if !alreadyImported || originalAlias == "_" {
-				importChanges[path] = candidateImports[path]
-			}
-		}
-		proposals[c.assign] = proposal{
-			fix:             fix,
-			imports:         candidateImports,
-			renderedImports: renderedImports,
-			importChanges:   importChanges,
+		idxs := hoistByFn[fnBody]
+		if edit, ok := computeDeclEdit(pass, file, imports, usedImportNames, candidates, idxs); ok {
+			declEditByFn[fnBody] = edit
 		}
 	}
 
-	conflictedCandidates := make(map[*ast.AssignStmt]bool)
-	for _, current := range candidates {
-		currentProposal, ok := proposals[current.assign]
-		if !ok || len(currentProposal.importChanges) == 0 {
-			continue
-		}
-		for _, conflicting := range conflictingCandidates {
-			conflictingProposal, ok := proposals[conflicting.assign]
-			if !ok || len(conflictingProposal.importChanges) == 0 ||
-				maps.Equal(currentProposal.importChanges, conflictingProposal.importChanges) {
-				continue
-			}
-
-			conflictedCandidates[current.assign] = true
-			conflictedCandidates[conflicting.assign] = true
-		}
-	}
-
-	accepted := make(map[*ast.AssignStmt]bool, len(uniqueCandidates))
-	var acceptedFixes []analysis.SuggestedFix
-	for _, c := range uniqueCandidates {
-		proposal, ok := proposals[c.assign]
-		if !ok || conflictedCandidates[c.assign] || conflictsWithAcceptedFix(pass, proposal.fix, acceptedFixes) {
-			continue
-		}
-
-		accepted[c.assign] = true
-		acceptedFixes = append(acceptedFixes, proposal.fix)
-		if !currentCandidates[c.assign] {
-			continue
-		}
-
-		for path, alias := range proposal.renderedImports {
-			if originalAlias, alreadyImported := originalImports[path]; alreadyImported && originalAlias != "_" {
-				continue
-			}
-			imports[path] = proposal.imports[path]
-			usedImportNames[alias] = true
-		}
-	}
-
-	fixes := make(map[*ast.AssignStmt]analysis.SuggestedFix, len(candidates))
-	for _, c := range candidates {
-		if accepted[c.assign] {
-			fixes[c.assign] = proposals[c.assign].fix
-		}
-	}
-
-	return fixes
+	return declEditByFn
 }
 
-func buildInlineCandidateFix(pass *analysis.Pass, imports map[string]string, usedImportNames map[string]bool, c candidate) (analysis.SuggestedFix, map[string]string, bool) {
-	if len(c.hoistNames) == 0 {
-		fix, ok := buildInlineFix(pass, c.assign, c.ifStmt)
-		return fix, nil, ok
-	}
-
-	renderedImports := make(map[string]string)
-	declarations, ok := computeHoistDeclarations(pass, imports, usedImportNames, c, renderedImports)
-	if !ok {
-		return analysis.SuggestedFix{}, nil, false
-	}
-
-	fix, ok := buildHoistFix(pass, c, declarations)
-	return fix, renderedImports, ok
-}
-
-func conflictsWithAcceptedFix(pass *analysis.Pass, fix analysis.SuggestedFix, accepted []analysis.SuggestedFix) bool {
-	for _, existing := range accepted {
-		for _, edit := range fix.TextEdits {
-			for _, existingEdit := range existing.TextEdits {
-				if textEditsOverlap(pass, edit, existingEdit) {
-					return true
-				}
-			}
-		}
-	}
-
-	return false
-}
-
-func textEditsOverlap(pass *analysis.Pass, left, right analysis.TextEdit) bool {
-	leftStart, leftEnd := pass.Fset.Position(left.Pos).Offset, pass.Fset.Position(left.End).Offset
-	rightStart, rightEnd := pass.Fset.Position(right.Pos).Offset, pass.Fset.Position(right.End).Offset
-
-	if leftStart == leftEnd {
-		return leftStart >= rightStart && leftStart <= rightEnd
-	}
-	if rightStart == rightEnd {
-		return rightStart >= leftStart && rightStart <= leftEnd
-	}
-
-	return leftStart < rightEnd && rightStart < leftEnd
-}
-
-func inlineCandidateMessage(c candidate, fixable bool) string {
-	if !fixable {
-		return "if " + c.checkName + " cannot be safely inlined automatically"
-	}
-
+func inlineCandidateMessage(c candidate) string {
 	if len(c.hoistNames) == 0 {
 		return "if " + c.checkName + " can be inlined into the assignment"
 	}
 
-	return "if " + c.checkName + " can be inlined by declaring " + strings.Join(c.hoistNames, ", ") +
-		" before the assignment and changing := to ="
+	hoistDisplay := make([]string, len(c.hoistNames))
+	for i, name := range c.hoistNames {
+		if r, ok := c.renames[name]; ok {
+			hoistDisplay[i] = name + " (renamed to " + r + " to avoid shadowing)"
+		} else {
+			hoistDisplay[i] = name
+		}
+	}
+
+	return "if " + c.checkName + " can be inlined by hoisting " + strings.Join(hoistDisplay, ", ") +
+		" to var declarations at the top of the function and changing := to ="
 }
 
-func reportInlineCandidates(pass *analysis.Pass, analyzerName string, candidates []candidate, fixes map[*ast.AssignStmt]analysis.SuggestedFix, importEdits []analysis.TextEdit) {
+func reportInlineCandidates(pass *analysis.Pass, analyzerName string, candidates []candidate, declarations map[*ast.BlockStmt]declEdit, importEdits []analysis.TextEdit) {
+	varBlockEmitted := map[*ast.BlockStmt]bool{}
 	for _, c := range candidates {
-		fix, fixable := inlineCandidateFix(pass, c, fixes)
 		diag := analysis.Diagnostic{
 			Pos: c.assign.Pos(), End: c.ifStmt.End(),
-			Category: analyzerName, Message: inlineCandidateMessage(c, fixable),
+			Category: analyzerName, Message: inlineCandidateMessage(c),
 		}
 
-		if fixable {
+		if fix, ok := inlineCandidateFix(pass, c, declarations, varBlockEmitted); ok {
 			if len(c.hoistNames) > 0 {
 				fix.TextEdits = append(fix.TextEdits, importEdits...)
 				importEdits = nil
@@ -274,12 +155,29 @@ func reportInlineCandidates(pass *analysis.Pass, analyzerName string, candidates
 	}
 }
 
-func inlineCandidateFix(_ *analysis.Pass, c candidate, fixes map[*ast.AssignStmt]analysis.SuggestedFix) (analysis.SuggestedFix, bool) {
-	fix, ok := fixes[c.assign]
+func inlineCandidateFix(pass *analysis.Pass, c candidate, declarations map[*ast.BlockStmt]declEdit, emitted map[*ast.BlockStmt]bool) (analysis.SuggestedFix, bool) {
+	var ok bool
+	var edit declEdit
+
+	if len(c.hoistNames) == 0 {
+		return buildInlineFix(pass, c.assign, c.ifStmt)
+	}
+
+	if edit, ok = declarations[c.fnBody]; !ok {
+		return analysis.SuggestedFix{}, false
+	}
+
+	includeVarBlock := edit.text != "" && !emitted[c.fnBody]
+
+	fix, ok := buildHoistFix(pass, c, edit, includeVarBlock)
+	if ok && includeVarBlock {
+		emitted[c.fnBody] = true
+	}
+
 	return fix, ok
 }
 
-func matchPattern(pass *analysis.Pass, block *ast.BlockStmt, i int, checkedVariable func(*analysis.Pass, ast.Expr) *ast.Ident) (candidate, bool) {
+func matchPattern(pass *analysis.Pass, file *ast.File, block *ast.BlockStmt, i int, checkedVariable func(*analysis.Pass, ast.Expr) *ast.Ident) (candidate, bool) {
 	var ok bool
 	var zero candidate
 	var companions []string
@@ -320,62 +218,29 @@ func matchPattern(pass *analysis.Pass, block *ast.BlockStmt, i int, checkedVaria
 	}
 
 	rest := block.List[i+2:]
-	needsHoist := false
+	var hoist []string
+
 	for _, name := range companions {
-		needsHoist = needsHoist || usedAfter(rest, name)
+		if usedAfter(rest, name) {
+			hoist = append(hoist, name)
+		}
 	}
 
-	// A short declaration that reuses any existing LHS binding must stay an
-	// assignment to that binding; moving it into an if initializer would shadow it.
-	needsHoist = needsHoist || assignmentHasPartialRedecl(pass, assign)
-	if !needsHoist && usedAfter(rest, checkName) {
+	if len(hoist) == 0 && usedAfter(rest, checkName) {
 		return zero, false
 	}
 
-	c := candidate{checkName: checkName, assign: assign, ifStmt: ifStmt}
-	if !needsHoist {
+	c := candidate{checkName: checkName, assign: assign, ifStmt: ifStmt, hoistNames: hoist}
+	if len(hoist) == 0 {
 		return c, true
 	}
 
-	c.hoistNames = newAssignmentNames(pass, assign)
-	if len(c.hoistNames) == 0 {
+	c.fnBody = enclosingFuncBody(file, assign.Pos())
+	if c.fnBody == nil || !prepareHoistRenames(pass, &c) {
 		return zero, false
 	}
 
 	return c, true
-}
-
-func assignmentHasPartialRedecl(pass *analysis.Pass, assign *ast.AssignStmt) bool {
-	if pass.TypesInfo == nil {
-		return true
-	}
-
-	for _, lhs := range assign.Lhs {
-		id, ok := lhs.(*ast.Ident)
-		if ok && id.Name != "_" && pass.TypesInfo.Defs[id] == nil {
-			return true
-		}
-	}
-
-	return false
-}
-
-func newAssignmentNames(pass *analysis.Pass, assign *ast.AssignStmt) []string {
-	if pass.TypesInfo == nil {
-		return nil
-	}
-
-	var names []string
-	for _, lhs := range assign.Lhs {
-		id, ok := lhs.(*ast.Ident)
-		if !ok || id.Name == "_" || pass.TypesInfo.Defs[id] == nil {
-			continue
-		}
-
-		names = append(names, id.Name)
-	}
-
-	return names
 }
 
 func assignmentCompanions(pass *analysis.Pass, assign *ast.AssignStmt, checked *ast.Ident) ([]string, bool) {
@@ -384,8 +249,8 @@ func assignmentCompanions(pass *analysis.Pass, assign *ast.AssignStmt, checked *
 	var hasCheck bool
 	var companions []string
 
-	for _, lhs := range assign.Lhs {
-		if id, ok = lhs.(*ast.Ident); !ok {
+	for _, e := range assign.Lhs {
+		if id, ok = e.(*ast.Ident); !ok {
 			return nil, false
 		}
 
@@ -405,106 +270,264 @@ func assignmentCompanions(pass *analysis.Pass, assign *ast.AssignStmt, checked *
 	return companions, hasCheck
 }
 
-// hoistRHSIsSafe reports whether declarations inserted before the assignment
-// would capture an outer identifier used by its right-hand side.
-func hoistRHSIsSafe(pass *analysis.Pass, assign *ast.AssignStmt) bool {
-	if pass.TypesInfo == nil {
-		return false
-	}
+func prepareHoistRenames(pass *analysis.Pass, c *candidate) bool {
+	ownObjs := candidateOwnObjs(pass, c.assign)
+	used := collectUsedNames(c.fnBody)
 
-	newVariables := make(map[string]types.Object)
-	for _, lhs := range assign.Lhs {
-		id, ok := lhs.(*ast.Ident)
-		if !ok || id.Name == "_" {
+	for _, name := range c.hoistNames {
+		if isPartialRedecl(pass, c.assign, name) {
+			// Companion reuses an outer-scope var (e.g. a parameter); the
+			// hoist path just converts := to = without introducing a new
+			// declaration, so no shadowing is possible.
 			continue
 		}
 
-		if obj := pass.TypesInfo.Defs[id]; obj != nil {
-			newVariables[id.Name] = obj
+		if !hoistWouldShadow(pass, c.fnBody, name, ownObjs) {
+			continue
 		}
-	}
 
-	for _, rhs := range assign.Rhs {
-		selectors := map[*ast.Ident]bool{}
-		ast.Inspect(rhs, func(n ast.Node) bool {
-			if selector, ok := n.(*ast.SelectorExpr); ok && selector.Sel != nil {
-				selectors[selector.Sel] = true
-			}
+		obj := lhsObj(pass, c.assign, name)
 
-			return true
-		})
-
-		safe := true
-		ast.Inspect(rhs, func(n ast.Node) bool {
-			id, ok := n.(*ast.Ident)
-			if !ok || selectors[id] {
-				return true
-			}
-
-			newVariable := newVariables[id.Name]
-			usedVariable := pass.TypesInfo.Uses[id]
-			if newVariable == nil || usedVariable == nil {
-				return true
-			}
-
-			if isStrictScopeDescendant(usedVariable.Parent(), newVariable.Parent()) {
-				return true
-			}
-
-			safe = false
-			return false
-		})
-
-		if !safe {
+		newName := pickFreshName(name, obj, used)
+		if newName == "" {
 			return false
 		}
+
+		if c.renames == nil {
+			c.renames = map[string]string{}
+		}
+
+		c.renames[name] = newName
+		used[newName] = true
 	}
 
 	return true
 }
 
-func isStrictScopeDescendant(scope, ancestor *types.Scope) bool {
-	if scope == nil || ancestor == nil || scope == ancestor {
+func isPartialRedecl(pass *analysis.Pass, assign *ast.AssignStmt, name string) bool {
+	if pass.TypesInfo == nil {
 		return false
 	}
 
-	for scope = scope.Parent(); scope != nil; scope = scope.Parent() {
-		if scope == ancestor {
-			return true
+	for _, e := range assign.Lhs {
+		id, ok := e.(*ast.Ident)
+		if !ok || id.Name != name {
+			continue
 		}
+
+		return pass.TypesInfo.Defs[id] == nil
 	}
 
 	return false
 }
 
-func computeHoistDeclarations(pass *analysis.Pass, imports map[string]string, usedImportNames map[string]bool, c candidate, renderedImports map[string]string) (declEdit, bool) {
-	if pass.TypesInfo == nil || !hoistRHSIsSafe(pass, c.assign) {
-		return declEdit{}, false
+func candidateOwnObjs(pass *analysis.Pass, assign *ast.AssignStmt) map[types.Object]bool {
+	var ok bool
+	var id *ast.Ident
+
+	objs := map[types.Object]bool{}
+	if pass.TypesInfo == nil {
+		return objs
 	}
 
-	qualifier := hoistPackageQualifier(pass, imports, usedImportNames, renderedImports)
-	declarations, ok := collectNewHoistDeclarations(pass, c, qualifier, imports)
-	scope := assignmentScope(pass, c.assign)
-	if !ok || len(declarations) == 0 || scope == nil || !hoistDeclarationsPreserveTypes(pass, c, scope, declarations) {
-		return declEdit{}, false
-	}
-
-	return renderHoistDeclarations(declarations), true
-}
-
-func assignmentScope(pass *analysis.Pass, assign *ast.AssignStmt) *types.Scope {
-	for _, lhs := range assign.Lhs {
-		id, ok := lhs.(*ast.Ident)
-		if !ok || id.Name == "_" {
+	for _, e := range assign.Lhs {
+		if id, ok = e.(*ast.Ident); !ok {
 			continue
 		}
 
 		if obj := pass.TypesInfo.Defs[id]; obj != nil {
-			return obj.Parent()
+			objs[obj] = true
+		}
+	}
+
+	return objs
+}
+
+func lhsObj(pass *analysis.Pass, assign *ast.AssignStmt, name string) types.Object {
+	if pass.TypesInfo == nil {
+		return nil
+	}
+
+	for _, e := range assign.Lhs {
+		id, ok := e.(*ast.Ident)
+		if !ok || id.Name != name {
+			continue
+		}
+
+		if obj := pass.TypesInfo.Defs[id]; obj != nil {
+			return obj
 		}
 	}
 
 	return nil
+}
+
+func collectUsedNames(fnBody *ast.BlockStmt) map[string]bool {
+	names := map[string]bool{}
+	ast.Inspect(fnBody, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok {
+			names[id.Name] = true
+		}
+
+		return true
+	})
+
+	return names
+}
+
+// pickFreshName returns a name that doesn't collide with anything already
+// referenced in the function body. It tries a type-derived name first
+// (e.g. *tdm.TdmService → tdmService) and falls back to numeric suffixes.
+func pickFreshName(original string, obj types.Object, used map[string]bool) string {
+	tryName := func(n string) bool {
+		if n == "" || n == original || used[n] {
+			return false
+		}
+
+		return types.Universe.Lookup(n) == nil
+	}
+
+	if obj != nil {
+		if base := baseTypeName(obj.Type()); tryName(base) {
+			return base
+		}
+	}
+
+	for i := 2; i < 1000; i++ {
+		n := original + strconv.Itoa(i)
+		if tryName(n) {
+			return n
+		}
+	}
+
+	return ""
+}
+
+func baseTypeName(t types.Type) string {
+	for i := 0; i < 16 && t != nil; i++ {
+		switch x := t.(type) {
+		case *types.Pointer:
+			t = x.Elem()
+		case *types.Named:
+			n := x.Obj().Name()
+			if n == "" {
+				return ""
+			}
+
+			r := []rune(n)
+			r[0] = unicode.ToLower(r[0])
+
+			return string(r)
+		default:
+			return ""
+		}
+	}
+
+	return ""
+}
+
+// hoistWouldShadow reports whether introducing `var name ...` at the top of
+// fnBody would change the meaning of an existing reference. Hoisting moves a
+// binding from the inner :=' scope (effective after the assignment) to the
+// outer function-body scope (effective from the very start of the body), so
+// any reference to `name` that originally resolved to a parameter, import,
+// or other outer-scope binding would now resolve to the new variable.
+func hoistWouldShadow(pass *analysis.Pass, fnBody *ast.BlockStmt, name string, ownObjs map[types.Object]bool) bool {
+	if pass.TypesInfo == nil {
+		return true
+	}
+
+	skipSel := map[*ast.Ident]bool{}
+	ast.Inspect(fnBody, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel != nil {
+			skipSel[sel.Sel] = true
+		}
+
+		return true
+	})
+
+	var shadow bool
+	ast.Inspect(fnBody, func(n ast.Node) bool {
+		if shadow {
+			return false
+		}
+
+		id, ok := n.(*ast.Ident)
+		if !ok || id.Name != name || skipSel[id] {
+			return true
+		}
+
+		obj := pass.TypesInfo.Uses[id]
+		if obj == nil {
+			return true
+		}
+
+		if ownObjs[obj] {
+			return true
+		}
+
+		if v, ok := obj.(*types.Var); ok && v.IsField() {
+			return true
+		}
+
+		if obj.Pos() < fnBody.Pos() || obj.Pos() >= fnBody.End() {
+			shadow = true
+
+			return false
+		}
+
+		return true
+	})
+
+	return shadow
+}
+
+func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]string, usedImportNames map[string]bool, candidates []candidate, idxs []int) (declEdit, bool) {
+	var ok bool
+	var newCollected []hoistDeclaration
+	var existingCollected []hoistDeclaration
+
+	if pass.TypesInfo == nil || len(idxs) == 0 {
+		return declEdit{}, false
+	}
+
+	fnBody := candidates[idxs[0]].fnBody
+	if fnBody == nil {
+		return declEdit{}, false
+	}
+
+	allNames, topStmts := collectVarContext(fnBody)
+
+	seen := map[string]bool{}
+
+	for name := range allNames {
+		seen[name] = true
+	}
+
+	for name := range functionScopeNames(file, fnBody) {
+		seen[name] = true
+	}
+
+	qualPkgs := hoistPackageQualifier(pass, imports, usedImportNames)
+
+	if newCollected, ok = collectNewHoistDeclarations(pass, candidates, idxs, seen, qualPkgs); !ok {
+		return declEdit{}, false
+	}
+
+	if len(newCollected) == 0 {
+		return declEdit{}, true
+	}
+
+	if existingCollected, ok = collectExistingHoistDeclarations(pass, topStmts, qualPkgs); !ok {
+		return declEdit{}, false
+	}
+
+	existingCollected = append(existingCollected, newCollected...)
+	sort.SliceStable(existingCollected, func(i, j int) bool {
+		return varPriority(existingCollected[i].name) < varPriority(existingCollected[j].name)
+	})
+
+	return renderHoistDeclarations(fnBody, topStmts, existingCollected), true
 }
 
 type hoistDeclaration struct {
@@ -512,7 +535,7 @@ type hoistDeclaration struct {
 	typ  string
 }
 
-func hoistPackageQualifier(pass *analysis.Pass, imports map[string]string, usedImportNames map[string]bool, renderedImports map[string]string) types.Qualifier {
+func hoistPackageQualifier(pass *analysis.Pass, imports map[string]string, usedImportNames map[string]bool) types.Qualifier {
 	return func(p *types.Package) string {
 		if p == nil || p == pass.Pkg {
 			return ""
@@ -533,12 +556,6 @@ func hoistPackageQualifier(pass *analysis.Pass, imports map[string]string, usedI
 			}
 		}
 
-		localName := alias
-		if localName == "" {
-			localName = p.Name()
-		}
-		renderedImports[p.Path()] = localName
-
 		if alias == "." {
 			return ""
 		}
@@ -551,245 +568,242 @@ func hoistPackageQualifier(pass *analysis.Pass, imports map[string]string, usedI
 	}
 }
 
-func collectNewHoistDeclarations(pass *analysis.Pass, c candidate, qualifier types.Qualifier, imports map[string]string) ([]hoistDeclaration, bool) {
+func collectNewHoistDeclarations(pass *analysis.Pass, candidates []candidate, idxs []int, seen map[string]bool, qualifier types.Qualifier) ([]hoistDeclaration, bool) {
+	var ok bool
+	var id *ast.Ident
+	var declType types.Type
 	var collected []hoistDeclaration
-	scope := assignmentScope(pass, c.assign)
-	if scope == nil {
-		return nil, false
-	}
 
-	for _, lhs := range c.assign.Lhs {
-		id, ok := lhs.(*ast.Ident)
-		if !ok {
-			return nil, false
+	for _, idx := range idxs {
+		c := candidates[idx]
+		for _, e := range c.assign.Lhs {
+			if id, ok = e.(*ast.Ident); !ok {
+				return nil, false
+			}
+
+			if id.Name == "_" {
+				continue
+			}
+
+			name := hoistRenamedName(c, id.Name)
+
+			if seen[name] {
+				continue
+			}
+
+			obj := pass.TypesInfo.Defs[id]
+			if obj == nil {
+				continue
+			}
+
+			if declType, ok = accessibleHoistType(obj.Type(), pass.Pkg); !ok {
+				return nil, false
+			}
+
+			typeStr := types.TypeString(declType, qualifier)
+			seen[name] = true
+			collected = append(collected, hoistDeclaration{name: name, typ: typeStr})
 		}
-
-		if id.Name == "_" {
-			continue
-		}
-
-		obj := pass.TypesInfo.Defs[id]
-		if obj == nil {
-			continue
-		}
-
-		if hoistTypeHasUnsafeStructure(obj.Type(), pass.Pkg, imports, scope, c.assign.Pos()) {
-			return nil, false
-		}
-
-		collected = append(collected, hoistDeclaration{
-			name: id.Name,
-			typ:  types.TypeString(obj.Type(), qualifier),
-		})
 	}
 
 	return collected, true
 }
 
-func hoistTypeHasUnsafeStructure(typ types.Type, local *types.Package, imports map[string]string, scope *types.Scope, pos token.Pos) bool {
-	switch typ := typ.(type) {
-	case *types.Alias:
-		return hoistTypeNameIsShadowed(typ.Obj(), imports, scope, pos) ||
-			typeArgumentsHaveUnsafeStructure(typ.TypeArgs(), local, imports, scope, pos)
-	case *types.Named:
-		return hoistTypeNameIsShadowed(typ.Obj(), imports, scope, pos) ||
-			typeArgumentsHaveUnsafeStructure(typ.TypeArgs(), local, imports, scope, pos)
-	case *types.Pointer:
-		return hoistTypeHasUnsafeStructure(typ.Elem(), local, imports, scope, pos)
-	case *types.Array:
-		return hoistTypeHasUnsafeStructure(typ.Elem(), local, imports, scope, pos)
-	case *types.Slice:
-		return hoistTypeHasUnsafeStructure(typ.Elem(), local, imports, scope, pos)
-	case *types.Map:
-		return hoistTypeHasUnsafeStructure(typ.Key(), local, imports, scope, pos) ||
-			hoistTypeHasUnsafeStructure(typ.Elem(), local, imports, scope, pos)
-	case *types.Chan:
-		return hoistTypeHasUnsafeStructure(typ.Elem(), local, imports, scope, pos)
-	case *types.Signature:
-		return tupleHasUnsafeStructure(typ.Params(), local, imports, scope, pos) ||
-			tupleHasUnsafeStructure(typ.Results(), local, imports, scope, pos)
-	case *types.Struct:
-		for i := 0; i < typ.NumFields(); i++ {
-			field := typ.Field(i)
-			if hasForeignUnexportedName(field, local) ||
-				hoistTypeHasUnsafeStructure(field.Type(), local, imports, scope, pos) {
-				return true
-			}
-		}
-	case *types.Interface:
-		typ.Complete()
-		for i := 0; i < typ.NumExplicitMethods(); i++ {
-			method := typ.ExplicitMethod(i)
-			if hasForeignUnexportedName(method, local) ||
-				hoistTypeHasUnsafeStructure(method.Type(), local, imports, scope, pos) {
-				return true
-			}
-		}
-		for i := 0; i < typ.NumEmbeddeds(); i++ {
-			if hoistTypeHasUnsafeStructure(typ.EmbeddedType(i), local, imports, scope, pos) {
-				return true
-			}
-		}
-	case *types.Union:
-		for i := 0; i < typ.Len(); i++ {
-			if hoistTypeHasUnsafeStructure(typ.Term(i).Type(), local, imports, scope, pos) {
-				return true
-			}
-		}
+func hoistRenamedName(c candidate, name string) string {
+	if renamed, ok := c.renames[name]; ok {
+		return renamed
 	}
 
-	return false
+	return name
 }
 
-func hoistTypeNameIsShadowed(name *types.TypeName, imports map[string]string, scope *types.Scope, pos token.Pos) bool {
-	if name.Pkg() == nil || imports[name.Pkg().Path()] != "." {
-		return false
-	}
+func collectExistingHoistDeclarations(pass *analysis.Pass, topStmts []ast.Stmt, qualifier types.Qualifier) ([]hoistDeclaration, bool) {
+	var ok bool
+	var declType types.Type
+	var vs *ast.ValueSpec
+	var collected []hoistDeclaration
 
-	_, object := scope.LookupParent(name.Name(), pos-1)
-	typeName, ok := object.(*types.TypeName)
-	return !ok || !types.Identical(typeName.Type(), name.Type())
-}
+	for _, stmt := range topStmts {
+		decl := stmt.(*ast.DeclStmt)
+		gen := decl.Decl.(*ast.GenDecl)
 
-func typeArgumentsHaveUnsafeStructure(args *types.TypeList, local *types.Package, imports map[string]string, scope *types.Scope, pos token.Pos) bool {
-	if args == nil {
-		return false
-	}
-
-	for i := 0; i < args.Len(); i++ {
-		if hoistTypeHasUnsafeStructure(args.At(i), local, imports, scope, pos) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func tupleHasUnsafeStructure(tuple *types.Tuple, local *types.Package, imports map[string]string, scope *types.Scope, pos token.Pos) bool {
-	if tuple == nil {
-		return false
-	}
-
-	for i := 0; i < tuple.Len(); i++ {
-		if hoistTypeHasUnsafeStructure(tuple.At(i).Type(), local, imports, scope, pos) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func hasForeignUnexportedName(object types.Object, local *types.Package) bool {
-	if object.Exported() {
-		return false
-	}
-
-	owner := object.Pkg()
-	return owner == nil || local == nil || owner.Path() != local.Path()
-}
-
-func hoistDeclarationsPreserveTypes(pass *analysis.Pass, c candidate, scope *types.Scope, declarations []hoistDeclaration) bool {
-	declaredNames := make(map[string]bool, len(declarations))
-	for _, declaration := range declarations {
-		expr, err := parser.ParseExpr(declaration.typ)
-		if err != nil {
-			return false
-		}
-
-		ignored := make(map[*ast.Ident]bool)
-		selectorBases := make(map[*ast.Ident]bool)
-		accessible := true
-		ast.Inspect(expr, func(node ast.Node) bool {
-			switch node := node.(type) {
-			case *ast.SelectorExpr:
-				ignored[node.Sel] = true
-				if !node.Sel.IsExported() {
-					accessible = false
-				}
-				if base, ok := node.X.(*ast.Ident); ok {
-					selectorBases[base] = true
-				}
-			case *ast.Field:
-				for _, name := range node.Names {
-					ignored[name] = true
-				}
+		for _, spec := range gen.Specs {
+			if vs, ok = spec.(*ast.ValueSpec); !ok {
+				continue
 			}
 
-			return true
-		})
-		if !accessible {
-			return false
-		}
-
-		safe := true
-		ast.Inspect(expr, func(node ast.Node) bool {
-			id, ok := node.(*ast.Ident)
-			if !ok || ignored[id] {
-				return true
-			}
-
-			if declaredNames[id.Name] {
-				safe = false
-				return false
-			}
-
-			_, object := scope.LookupParent(id.Name, c.assign.Pos()-1)
-			if selectorBases[id] {
-				if object == nil {
-					// Newly-added import aliases are unique across the file.
-					return true
+			for _, n := range vs.Names {
+				obj := pass.TypesInfo.Defs[n]
+				if obj == nil {
+					continue
 				}
 
-				if _, ok := object.(*types.PkgName); !ok {
-					safe = false
-					return false
+				if declType, ok = accessibleHoistType(obj.Type(), pass.Pkg); !ok {
+					return nil, false
 				}
 
-				return true
+				typeStr := types.TypeString(declType, qualifier)
+				collected = append(collected, hoistDeclaration{name: n.Name, typ: typeStr})
 			}
-
-			typeName, ok := object.(*types.TypeName)
-			if !ok {
-				safe = false
-				return false
-			}
-
-			if packageName := pass.Pkg.Scope().Lookup(id.Name); packageName != nil && packageName != typeName {
-				safe = false
-				return false
-			}
-
-			if universeName := types.Universe.Lookup(id.Name); universeName != nil && universeName != typeName {
-				safe = false
-				return false
-			}
-
-			return true
-		})
-		if !safe {
-			return false
 		}
-
-		declaredNames[declaration.name] = true
 	}
 
-	return true
+	return collected, true
 }
 
-func renderHoistDeclarations(declarations []hoistDeclaration) declEdit {
+func renderHoistDeclarations(fnBody *ast.BlockStmt, topStmts []ast.Stmt, combined []hoistDeclaration) declEdit {
 	var b strings.Builder
-	for i, declaration := range declarations {
-		if i > 0 {
-			b.WriteByte('\n')
+	var pos, end token.Pos
+
+	if len(topStmts) > 0 {
+		pos = topStmts[0].Pos()
+		end = topStmts[len(topStmts)-1].End()
+
+		for i, e := range combined {
+			if i > 0 {
+				b.WriteString("\n\t")
+			}
+
+			b.WriteString("var " + e.name + " " + e.typ)
+		}
+	} else {
+		pos = fnBody.Lbrace + 1
+		end = pos
+
+		for _, e := range combined {
+			b.WriteString("\n\tvar " + e.name + " " + e.typ)
 		}
 
-		b.WriteString("var ")
-		b.WriteString(declaration.name)
-		b.WriteByte(' ')
-		b.WriteString(declaration.typ)
+		b.WriteString("\n")
 	}
 
-	return declEdit{text: b.String()}
+	return declEdit{pos: pos, end: end, text: b.String()}
+}
+
+// accessibleHoistType avoids spelling private imported types in generated declarations.
+// Only interfaces preserving the complete public method set are considered; a
+// narrower interface could remove methods needed by subsequent statements.
+func accessibleHoistType(typ types.Type, current *types.Package) (types.Type, bool) {
+	if hoistTypeAccessible(typ, current) {
+		return typ, true
+	}
+
+	base := types.Unalias(typ)
+	if ptr, ok := base.(*types.Pointer); ok {
+		base = types.Unalias(ptr.Elem())
+	}
+
+	named, ok := base.(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return nil, false
+	}
+
+	methods := types.NewMethodSet(typ)
+	publicMethods := 0
+
+	for i := 0; i < methods.Len(); i++ {
+		if methods.At(i).Obj().Exported() {
+			publicMethods++
+		}
+	}
+
+	if publicMethods == 0 {
+		return nil, false
+	}
+
+	var replacement types.Type
+	scope := named.Obj().Pkg().Scope()
+
+	for _, name := range scope.Names() {
+		obj, ok := scope.Lookup(name).(*types.TypeName)
+		if !ok || !obj.Exported() || !hoistTypeAccessible(obj.Type(), current) {
+			continue
+		}
+
+		iface, ok := obj.Type().Underlying().(*types.Interface)
+		if !ok || !iface.IsMethodSet() || iface.NumMethods() != publicMethods || !types.Implements(typ, iface) {
+			continue
+		}
+
+		if replacement != nil && !types.Identical(replacement, obj.Type()) {
+			// Multiple public contracts are ambiguous: keep the inferred binding.
+			return nil, false
+		}
+
+		replacement = obj.Type()
+	}
+
+	return replacement, replacement != nil
+}
+
+func hoistTypeAccessible(typ types.Type, current *types.Package) bool {
+	// Parsing the rendered type also covers nested pointers, containers,
+	// function signatures, aliases, and generic type arguments.
+	expr, err := parser.ParseExpr(types.TypeString(typ, func(pkg *types.Package) string {
+		if pkg == current {
+			return ""
+		}
+
+		return "external"
+	}))
+	if err != nil {
+		return false
+	}
+
+	accessible := true
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if selector, ok := node.(*ast.SelectorExpr); ok && !selector.Sel.IsExported() {
+			accessible = false
+		}
+
+		return accessible
+	})
+
+	return accessible
+}
+
+func collectVarContext(fnBody *ast.BlockStmt) (allNames map[string]bool, topStmts []ast.Stmt) {
+	var ok bool
+	var decl *ast.DeclStmt
+	var vs *ast.ValueSpec
+
+	allNames = map[string]bool{}
+
+	for _, stmt := range fnBody.List {
+		if decl, ok = stmt.(*ast.DeclStmt); !ok {
+			continue
+		}
+
+		gen, ok := decl.Decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+
+		for _, spec := range gen.Specs {
+			if vs, ok = spec.(*ast.ValueSpec); !ok {
+				continue
+			}
+
+			for _, n := range vs.Names {
+				allNames[n.Name] = true
+			}
+		}
+	}
+
+	for _, stmt := range fnBody.List {
+		if decl, ok = stmt.(*ast.DeclStmt); !ok {
+			break
+		}
+
+		gen, ok := decl.Decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			break
+		}
+
+		topStmts = append(topStmts, stmt)
+	}
+
+	return
 }
 
 func buildInlineFix(pass *analysis.Pass, assign *ast.AssignStmt, ifStmt *ast.IfStmt) (analysis.SuggestedFix, bool) {
@@ -813,9 +827,8 @@ func buildInlineFix(pass *analysis.Pass, assign *ast.AssignStmt, ifStmt *ast.IfS
 		return analysis.SuggestedFix{}, false
 	}
 
-	assignText := make([]byte, 0, endOff-startOff+2)
-	assignText = append(assignText, src[startOff:endOff]...)
-	assignText = append(assignText, ';', ' ')
+	assignText := append([]byte(nil), src[startOff:endOff]...)
+	assignText = append(assignText, []byte("; ")...)
 
 	return analysis.SuggestedFix{
 		Message: "inline assignment into the if statement",
@@ -826,144 +839,135 @@ func buildInlineFix(pass *analysis.Pass, assign *ast.AssignStmt, ifStmt *ast.IfS
 	}, true
 }
 
-func buildHoistFix(pass *analysis.Pass, c candidate, edit declEdit) (analysis.SuggestedFix, bool) {
+func buildHoistFix(pass *analysis.Pass, c candidate, edit declEdit, includeVarBlock bool) (analysis.SuggestedFix, bool) {
+	var ok bool
 	var err error
 	var src []byte
+	var lhsText []byte
 
 	if pass.ReadFile == nil {
 		return analysis.SuggestedFix{}, false
 	}
 
 	filename := pass.Fset.Position(c.assign.Pos()).Filename
+
 	if src, err = pass.ReadFile(filename); err != nil {
 		return analysis.SuggestedFix{}, false
 	}
 
 	startOff := pass.Fset.Position(c.assign.Pos()).Offset
 	tokOff := pass.Fset.Position(c.assign.TokPos).Offset
+
 	endOff := pass.Fset.Position(c.assign.End()).Offset
-	ifStartOff := pass.Fset.Position(c.ifStmt.Pos()).Offset
-	if startOff < 0 || tokOff < startOff || tokOff+2 > endOff || ifStartOff < endOff || ifStartOff > len(src) {
+	if startOff < 0 || endOff > len(src) || tokOff+2 > endOff || tokOff < startOff {
 		return analysis.SuggestedFix{}, false
 	}
 
-	gap := src[endOff:ifStartOff]
-	gapComments, ok := splitHoistGapComments(gap)
-	if !ok {
+	if lhsText, ok = hoistAssignmentLHS(c, src[startOff:tokOff]); !ok {
 		return analysis.SuggestedFix{}, false
 	}
 
-	lhsText := src[startOff:tokOff]
 	rhsText := src[tokOff+2 : endOff]
-	insert := make([]byte, 0, len(lhsText)+len(rhsText)+2)
+
+	insert := make([]byte, 0, len(lhsText)+1+len(rhsText)+2)
 	insert = append(insert, lhsText...)
 	insert = append(insert, '=')
 	insert = append(insert, rhsText...)
-	insert = append(insert, ';', ' ')
+	insert = append(insert, []byte("; ")...)
 
-	lineStart := startOff
-	for lineStart > 0 && src[lineStart-1] != '\n' {
-		lineStart--
+	edits := make([]analysis.TextEdit, 0, 8)
+	if includeVarBlock && edit.text != "" {
+		edits = append(edits, analysis.TextEdit{
+			Pos:     edit.pos,
+			End:     edit.end,
+			NewText: []byte(edit.text),
+		})
 	}
 
-	indent := src[lineStart:startOff]
-	for _, b := range indent {
-		if b != ' ' && b != '\t' {
-			return analysis.SuggestedFix{}, false
-		}
-	}
+	edits = append(edits,
+		analysis.TextEdit{Pos: c.assign.Pos(), End: c.ifStmt.Pos()},
+		analysis.TextEdit{Pos: c.ifStmt.Cond.Pos(), End: c.ifStmt.Cond.Pos(), NewText: insert},
+		analysis.TextEdit{Pos: c.ifStmt.End(), End: c.ifStmt.End(), NewText: []byte("\n")},
+	)
 
-	indentCount := 0
-	for i := 0; i < len(edit.text); i++ {
-		if edit.text[i] == '\n' {
-			indentCount++
-		}
-	}
-
-	declarationText := make([]byte, 0, len(edit.text)+indentCount*len(indent)+len(gap))
-	for i := 0; i < len(edit.text); i++ {
-		declarationText = append(declarationText, edit.text[i])
-		if edit.text[i] == '\n' {
-			declarationText = append(declarationText, indent...)
-		}
-	}
-	if len(gapComments) == 0 {
-		declarationText = append(declarationText, gap...)
-	} else {
-		ifLineStart := ifStartOff
-		for ifLineStart > 0 && src[ifLineStart-1] != '\n' {
-			ifLineStart--
-		}
-
-		ifIndent := src[ifLineStart:ifStartOff]
-		for _, b := range ifIndent {
-			if b != ' ' && b != '\t' {
-				return analysis.SuggestedFix{}, false
-			}
-		}
-
-		for _, comment := range gapComments {
-			declarationText = append(declarationText, '\n')
-			declarationText = append(declarationText, ifIndent...)
-			declarationText = append(declarationText, comment...)
-		}
-		declarationText = append(declarationText, '\n')
-		declarationText = append(declarationText, ifIndent...)
-	}
+	edits = append(edits, hoistRenameEdits(pass, c)...)
 
 	return analysis.SuggestedFix{
-		Message: "declare assignment variables in their original block and inline the assignment",
-		TextEdits: []analysis.TextEdit{
-			{Pos: c.assign.Pos(), End: c.ifStmt.Pos(), NewText: declarationText},
-			{Pos: c.ifStmt.Cond.Pos(), End: c.ifStmt.Cond.Pos(), NewText: insert},
-			{Pos: c.ifStmt.End(), End: c.ifStmt.End(), NewText: []byte("\n")},
-		},
+		Message:   "hoist to var declarations and inline assignment",
+		TextEdits: edits,
 	}, true
 }
 
-func splitHoistGapComments(gap []byte) ([][]byte, bool) {
-	var comments [][]byte
+func hoistAssignmentLHS(c candidate, original []byte) ([]byte, bool) {
+	var ok bool
+	var id *ast.Ident
 
-	for i := 0; i < len(gap); {
-		switch gap[i] {
-		case ' ', '\t', '\r', '\n':
-			i++
-		case '/':
-			start := i
-			if i+1 >= len(gap) {
-				return nil, false
-			}
+	if len(c.renames) == 0 {
+		return original, true
+	}
 
-			switch gap[i+1] {
-			case '/':
-				i += 2
-				for i < len(gap) && gap[i] != '\n' {
-					i++
-				}
-				end := i
-				if end > start && gap[end-1] == '\r' {
-					end--
-				}
-				comments = append(comments, gap[start:end])
-			case '*':
-				i += 2
-				for i+1 < len(gap) && (gap[i] != '*' || gap[i+1] != '/') {
-					i++
-				}
-				if i+1 >= len(gap) {
-					return nil, false
-				}
-				i += 2
-				comments = append(comments, gap[start:i])
-			default:
-				return nil, false
-			}
-		default:
+	parts := make([]string, 0, len(c.assign.Lhs))
+	for _, e := range c.assign.Lhs {
+		if id, ok = e.(*ast.Ident); !ok {
 			return nil, false
+		}
+
+		n := id.Name
+		if r, ok := c.renames[n]; ok {
+			n = r
+		}
+
+		parts = append(parts, n)
+	}
+
+	return []byte(strings.Join(parts, ", ") + " "), true
+}
+
+func hoistRenameEdits(pass *analysis.Pass, c candidate) []analysis.TextEdit {
+	if len(c.renames) == 0 || pass.TypesInfo == nil {
+		return nil
+	}
+
+	var edits []analysis.TextEdit
+	renameByObj := map[types.Object]string{}
+
+	for orig, newName := range c.renames {
+		if obj := lhsObj(pass, c.assign, orig); obj != nil {
+			renameByObj[obj] = newName
 		}
 	}
 
-	return comments, true
+	assignStart := c.assign.Pos()
+	assignEnd := c.assign.End()
+	ast.Inspect(c.fnBody, func(n ast.Node) bool {
+		var ok bool
+		var id *ast.Ident
+
+		if id, ok = n.(*ast.Ident); !ok {
+			return true
+		}
+
+		if id.Pos() >= assignStart && id.End() <= assignEnd {
+			return true
+		}
+
+		obj := pass.TypesInfo.Uses[id]
+		if obj == nil {
+			return true
+		}
+
+		if newName, ok := renameByObj[obj]; ok {
+			edits = append(edits, analysis.TextEdit{
+				Pos:     id.Pos(),
+				End:     id.End(),
+				NewText: []byte(newName),
+			})
+		}
+
+		return true
+	})
+
+	return edits
 }
 
 func checkedError(pass *analysis.Pass, expr ast.Expr) *ast.Ident {
@@ -1010,6 +1014,106 @@ func buildImportMap(file *ast.File) map[string]string {
 	}
 
 	return m
+}
+
+// functionScopeNames returns names declared at the function-body scope of
+// fnBody — i.e. receiver, parameters, and named return values. Per the Go
+// spec, these share a block with the function body, so introducing a `var X`
+// at the top of the body for any of those names would be a redeclaration.
+func functionScopeNames(file *ast.File, fnBody *ast.BlockStmt) map[string]bool {
+	names := map[string]bool{}
+	var (
+		recv   *ast.FieldList
+		fnType *ast.FuncType
+		found  bool
+	)
+	ast.Inspect(file, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			if x.Body == fnBody {
+				recv = x.Recv
+				fnType = x.Type
+				found = true
+
+				return false
+			}
+		case *ast.FuncLit:
+			if x.Body == fnBody {
+				fnType = x.Type
+				found = true
+
+				return false
+			}
+		}
+
+		return true
+	})
+	addFunctionFieldNames(names, recv)
+
+	if fnType != nil {
+		addFunctionFieldNames(names, fnType.Params)
+		addFunctionFieldNames(names, fnType.Results)
+	}
+
+	return names
+}
+
+func addFunctionFieldNames(names map[string]bool, list *ast.FieldList) {
+	if list == nil {
+		return
+	}
+
+	for _, field := range list.List {
+		for _, ident := range field.Names {
+			if ident.Name != "" && ident.Name != "_" {
+				names[ident.Name] = true
+			}
+		}
+	}
+}
+
+func enclosingFuncBody(file *ast.File, pos token.Pos) *ast.BlockStmt {
+	var result *ast.BlockStmt
+	ast.Inspect(file, func(n ast.Node) bool {
+		var body *ast.BlockStmt
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			body = x.Body
+		case *ast.FuncLit:
+			body = x.Body
+		default:
+			return true
+		}
+
+		if body == nil {
+			return true
+		}
+
+		if body.Pos() <= pos && pos < body.End() {
+			result = body
+
+			return true
+		}
+
+		return false
+	})
+
+	return result
+}
+
+func varPriority(name string) int {
+	switch name {
+	case "ok":
+		return 0
+	case errorVariableName:
+		return 1
+	default:
+		return 2
+	}
 }
 
 func usedAfter(stmts []ast.Stmt, name string) bool {
