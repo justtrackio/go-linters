@@ -21,22 +21,21 @@ func init() {
 type IfErrInline struct{}
 
 func (p *IfErrInline) BuildAnalyzers() ([]*analysis.Analyzer, error) {
-	return []*analysis.Analyzer{
-		{
-			Name:     "iferrinline",
-			Doc:      "reports error assignments followed by a non-nil check that can be inlined into the if initializer",
-			Run:      p.run,
-			Requires: []*analysis.Analyzer{inlineCompilePlanAnalyzer},
-		},
-	}, nil
+	plan := newInlineCompilePlanAnalyzer(inlineRule{"iferrinline", checkedError})
+	return []*analysis.Analyzer{newIfErrInlineAnalyzer(plan), plan}, nil
+}
+
+func newIfErrInlineAnalyzer(plan *analysis.Analyzer) *analysis.Analyzer {
+	return &analysis.Analyzer{
+		Name:     "iferrinline",
+		Doc:      "reports error assignments followed by a non-nil check that can be inlined into the if initializer",
+		Run:      func(pass *analysis.Pass) (any, error) { return runInlineCheck(pass, "iferrinline", plan) },
+		Requires: []*analysis.Analyzer{plan},
+	}
 }
 
 func (p *IfErrInline) GetLoadMode() string {
 	return register.LoadModeTypesInfo
-}
-
-func (p *IfErrInline) run(pass *analysis.Pass) (any, error) {
-	return runInlineCheck(pass, "iferrinline", checkedError)
 }
 
 func NewIfErrInline(_ any) (register.LinterPlugin, error) {
@@ -61,8 +60,8 @@ type declEdit struct {
 
 // runInlineCheck shares scope preservation and suggested fixes between the
 // error and boolean check analyzers.
-func runInlineCheck(pass *analysis.Pass, analyzerName string, _ func(*analysis.Pass, ast.Expr) *ast.Ident) (any, error) {
-	plan := pass.ResultOf[inlineCompilePlanAnalyzer].(*inlineCompilePlan)
+func runInlineCheck(pass *analysis.Pass, analyzerName string, prerequisite *analysis.Analyzer) (any, error) {
+	plan := pass.ResultOf[prerequisite].(*inlineCompilePlan)
 	for _, diagnostic := range plan.diagnostics[analyzerName] {
 		pass.Report(diagnostic)
 	}

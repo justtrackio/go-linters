@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -61,6 +62,243 @@ func originalInlineDiagnostics(pass *analysis.Pass, rule string) []analysis.Diag
 	return diagnostics
 }
 
+func inlineTestEditedSources(t *testing.T, pass *analysis.Pass, edits []analysis.TextEdit) map[string]string {
+	t.Helper()
+	sources := map[string]string{}
+	for _, file := range pass.Files {
+		selected := []analysis.TextEdit{}
+		tokenFile := pass.Fset.File(file.Pos())
+		source, err := pass.ReadFile(tokenFile.Name())
+		require.NoError(t, err)
+		for _, edit := range edits {
+			if pass.Fset.File(edit.Pos) == tokenFile {
+				selected = append(selected, edit)
+			}
+		}
+		sort.SliceStable(selected, func(i, j int) bool {
+			if selected[i].Pos != selected[j].Pos {
+				return selected[i].Pos < selected[j].Pos
+			}
+			return selected[i].End < selected[j].End
+		})
+		var fixed strings.Builder
+		cursor := 0
+		for _, edit := range selected {
+			start, end := tokenFile.Offset(edit.Pos), tokenFile.Offset(edit.End)
+			require.GreaterOrEqual(t, start, cursor)
+			require.GreaterOrEqual(t, end, start)
+			require.LessOrEqual(t, end, len(source))
+			fixed.Write(source[cursor:start])
+			fixed.Write(edit.NewText)
+			cursor = end
+		}
+		fixed.Write(source[cursor:])
+		sources[tokenFile.Name()] = fixed.String()
+	}
+	return sources
+}
+
+func assertOriginalInlineFixBytes(t *testing.T, pass *analysis.Pass, original, guarded []analysis.Diagnostic) {
+	t.Helper()
+	require.Len(t, guarded, len(original))
+	var originalEdits, guardedEdits []analysis.TextEdit
+	for i, before := range original {
+		after := guarded[i]
+		beforeFixes, afterFixes := before.SuggestedFixes, after.SuggestedFixes
+		require.Equal(t, before.Pos, after.Pos)
+		require.Equal(t, before.End, after.End)
+		require.Equal(t, before.Category, after.Category)
+		require.Len(t, afterFixes, len(beforeFixes))
+		for j, fix := range beforeFixes {
+			require.Equal(t, inlineTestEditedSources(t, pass, fix.TextEdits), inlineTestEditedSources(t, pass, afterFixes[j].TextEdits))
+		}
+		if len(beforeFixes) > 0 {
+			originalEdits = append(originalEdits, beforeFixes[0].TextEdits...)
+			guardedEdits = append(guardedEdits, afterFixes[0].TextEdits...)
+		}
+	}
+	require.Equal(t, inlineTestEditedSources(t, pass, originalEdits), inlineTestEditedSources(t, pass, guardedEdits))
+}
+
+func buildInlineCompilePlan(pass *analysis.Pass) (any, error) {
+	return newInlineCompilePlanAnalyzer(inlineRule{"iferrinline", checkedError}, inlineRule{"okinline", checkedOk}).Run(pass)
+}
+
+const selectiveInlineSource = `package fixture
+
+func pair() (int, error) { return 1, nil }
+func lookup() (int, bool) { return 1, true }
+func conflict() {
+	value, err := pair()
+	if err != nil {
+		return
+	}
+
+	_ = value
+
+	other, ok := lookup()
+	if !ok {
+		return
+	}
+
+	_ = other
+}
+`
+
+const selectiveInlineSiblingSource = `package fixture
+
+func pair() (int, error) { return 1, nil }
+func lookup() (int, bool) { return 1, true }
+func conflict() {
+	{
+		value, err := pair()
+		if err != nil {
+			return
+		}
+
+		_ = value
+	}
+
+	{
+		value, ok := lookup()
+		if !ok {
+			return
+		}
+
+		_ = value
+	}
+}
+`
+
+const selectiveInlineImportSource = `package fixture
+
+import (
+	a "example.com/importcollision/a/provider" // Preserve the first group's comment.
+
+	// Preserve the second group's leading comment.
+	b "example.com/importcollision/b/provider"
+)
+
+func errorCase() {
+	value, err := a.Pair()
+	if err != nil {
+		return
+	}
+
+	_ = value
+}
+
+func booleanCase() {
+	value, ok := b.Lookup()
+	if !ok {
+		return
+	}
+
+	_ = value
+}
+`
+
+func writeInlineSharedImportDependencies(t *testing.T, sourceRoot string) {
+	t.Helper()
+	for path, source := range map[string]string{
+		"example.com/importcollision/a/shared/value.go": "package shared\n\ntype Value struct{}\n",
+		"example.com/importcollision/b/shared/value.go": "package shared\n\ntype Value struct{}\n",
+		"example.com/importcollision/a/provider/provider.go": `package provider
+
+import "example.com/importcollision/a/shared"
+
+func Pair() (shared.Value, error) { return shared.Value{}, nil }
+`,
+		"example.com/importcollision/b/provider/provider.go": `package provider
+
+import "example.com/importcollision/b/shared"
+
+func Lookup() (shared.Value, bool) { return shared.Value{}, true }
+`,
+	} {
+		filename := filepath.Join(sourceRoot, filepath.FromSlash(path))
+		require.NoError(t, os.MkdirAll(filepath.Dir(filename), 0o755))
+		require.NoError(t, os.WriteFile(filename, []byte(source), 0o644))
+	}
+}
+
+func selectiveInlineFixtures() []struct{ name, source string } {
+	return []struct{ name, source string }{
+		{"distinct", selectiveInlineSource},
+		{"sibling-collision", selectiveInlineSiblingSource},
+	}
+}
+
+func runInlineTestAnalyzer(t *testing.T, pass *analysis.Pass, analyzer *analysis.Analyzer) []analysis.Diagnostic {
+	t.Helper()
+	results := map[*analysis.Analyzer]any{}
+	var diagnostics []analysis.Diagnostic
+	var run func(*analysis.Analyzer)
+	run = func(current *analysis.Analyzer) {
+		if _, exists := results[current]; exists {
+			return
+		}
+		for _, prerequisite := range current.Requires {
+			run(prerequisite)
+		}
+		selected := *pass
+		selected.Analyzer = current
+		selected.ResultOf = results
+		selected.Report = func(d analysis.Diagnostic) { diagnostics = append(diagnostics, d) }
+		result, err := current.Run(&selected)
+		require.NoError(t, err)
+		results[current] = result
+	}
+	run(analyzer)
+	return diagnostics
+}
+
+func TestStandaloneInlineRulesPreserveSafeSameFunctionHoists(t *testing.T) {
+	for _, fixture := range selectiveInlineFixtures() {
+		for _, rule := range []string{"iferrinline", "okinline"} {
+			t.Run(fixture.name+"/"+rule, func(t *testing.T) {
+				pass := inlineTestPass(t, map[string]string{"fixture.go": fixture.source})
+				var analyzers []*analysis.Analyzer
+				var err error
+				if rule == "iferrinline" {
+					analyzers, err = (&IfErrInline{}).BuildAnalyzers()
+				} else {
+					analyzers, err = (&OkInline{}).BuildAnalyzers()
+				}
+				require.NoError(t, err)
+				diagnostics := runInlineTestAnalyzer(t, pass, analyzers[0])
+				require.Len(t, diagnostics, 1)
+				assertOriginalInlineFixBytes(t, pass, originalInlineDiagnostics(pass, rule), diagnostics)
+				require.Len(t, diagnostics[0].SuggestedFixes, 1)
+				checker, err := newInlinePackageChecker(pass)
+				require.NoError(t, err)
+				require.NoError(t, checker.check(diagnostics[0].SuggestedFixes[0].TextEdits))
+			})
+		}
+	}
+}
+
+func TestAggregateInlineRulesWithholdCompetingSameFunctionHoists(t *testing.T) {
+	for _, fixture := range selectiveInlineFixtures() {
+		t.Run(fixture.name, func(t *testing.T) {
+			pass := inlineTestPass(t, map[string]string{"fixture.go": fixture.source})
+			analyzers, err := (&JustTrackPlugin{}).BuildAnalyzers()
+			require.NoError(t, err)
+			for _, analyzer := range analyzers {
+				if analyzer.Name != "iferrinline" && analyzer.Name != "okinline" {
+					continue
+				}
+				diagnostics := runInlineTestAnalyzer(t, pass, analyzer)
+				require.Len(t, diagnostics, 1)
+				original := originalInlineDiagnostics(pass, analyzer.Name)[0]
+				require.Equal(t, original.Pos, diagnostics[0].Pos)
+				require.Equal(t, original.End, diagnostics[0].End)
+				require.Empty(t, diagnostics[0].SuggestedFixes)
+			}
+		})
+	}
+}
+
 func TestInlineCompileGuardPreservesOriginalSafeFixes(t *testing.T) {
 	pass := inlineTestPass(t, map[string]string{"fixture.go": `package fixture
 func pair() (int,error) { return 1,nil }
@@ -77,7 +315,7 @@ func more() { err := error(nil); if err != nil { return } }
 	var combined []analysis.TextEdit
 	for _, rule := range []string{"iferrinline", "okinline"} {
 		original := originalInlineDiagnostics(pass, rule)
-		require.Equal(t, original, plan.diagnostics[rule], "safe output must preserve original bytes and owners")
+		assertOriginalInlineFixBytes(t, pass, original, plan.diagnostics[rule])
 		for _, d := range plan.diagnostics[rule] {
 			combined = append(combined, d.SuggestedFixes[0].TextEdits...)
 		}
@@ -121,7 +359,7 @@ func safe() { %s := %s(%s); if %s { return } }
 				require.Empty(t, d.SuggestedFixes)
 				require.Contains(t, d.Message, "manual fix required")
 			}
-			require.Equal(t, original[2], diagnostics[2])
+			assertOriginalInlineFixBytes(t, pass, original[2:], diagnostics[2:])
 			require.NoError(t, checker.check(diagnostics[2].SuggestedFixes[0].TextEdits))
 		})
 	}
@@ -236,11 +474,71 @@ func TestInlineCompileGuardSharedImportOwnerAndTransitiveTypes(t *testing.T) {
 	}
 }
 
+func TestInlineCompileGuardPreservesOriginalImportInsertionBytes(t *testing.T) {
+	testdata := testdataDir(t)
+	loaded, err := packages.Load(&packages.Config{
+		Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedTypesSizes | packages.NeedSyntax | packages.NeedImports | packages.NeedDeps,
+		Dir:  filepath.Join(testdata, "src"),
+		Env:  append(os.Environ(), "GO111MODULE=off", "GOWORK=off", "GOPATH="+testdata),
+	}, "testlintdata/missingimport")
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	require.Empty(t, loaded[0].Errors)
+	pkg := loaded[0]
+	pass := &analysis.Pass{Fset: pkg.Fset, Files: pkg.Syntax, Pkg: pkg.Types, TypesInfo: pkg.TypesInfo, TypesSizes: pkg.TypesSizes, ReadFile: os.ReadFile, Report: func(analysis.Diagnostic) {}}
+	original := originalInlineDiagnostics(pass, "iferrinline")
+	require.NotEmpty(t, original)
+	result, err := buildInlineCompilePlan(pass)
+	require.NoError(t, err)
+	diagnostics := result.(*inlineCompilePlan).diagnostics["iferrinline"]
+	assertOriginalInlineFixBytes(t, pass, original, diagnostics)
+	var edits []analysis.TextEdit
+	for _, diagnostic := range diagnostics {
+		require.Len(t, diagnostic.SuggestedFixes, 1)
+		edits = append(edits, diagnostic.SuggestedFixes[0].TextEdits...)
+	}
+	checker, err := newInlinePackageChecker(pass)
+	require.NoError(t, err)
+	require.NoError(t, checker.check(edits))
+}
+
+func TestStandaloneInlineSharedImportOwnersPreserveOriginalBytes(t *testing.T) {
+	gopath := t.TempDir()
+	sourceRoot := filepath.Join(gopath, "src")
+	filename := filepath.Join(sourceRoot, "fixture", "fixture.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(filename), 0o755))
+	require.NoError(t, os.WriteFile(filename, []byte(selectiveInlineImportSource), 0o644))
+	writeInlineSharedImportDependencies(t, sourceRoot)
+	loaded, err := packages.Load(&packages.Config{
+		Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedTypesSizes | packages.NeedSyntax | packages.NeedImports | packages.NeedDeps,
+		Dir:  sourceRoot,
+		Env:  append(os.Environ(), "GO111MODULE=off", "GOWORK=off", "GOPATH="+gopath),
+	}, "fixture")
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	require.Empty(t, loaded[0].Errors)
+	pkg := loaded[0]
+	pass := &analysis.Pass{Fset: pkg.Fset, Files: pkg.Syntax, Pkg: pkg.Types, TypesInfo: pkg.TypesInfo, TypesSizes: pkg.TypesSizes, ReadFile: os.ReadFile, Report: func(analysis.Diagnostic) {}}
+	for _, rule := range []inlineRule{{"iferrinline", checkedError}, {"okinline", checkedOk}} {
+		t.Run(rule.name, func(t *testing.T) {
+			result, err := newInlineCompilePlanAnalyzer(rule).Run(pass)
+			require.NoError(t, err)
+			diagnostics := result.(*inlineCompilePlan).diagnostics[rule.name]
+			require.Len(t, diagnostics, 1)
+			assertOriginalInlineFixBytes(t, pass, originalInlineDiagnostics(pass, rule.name), diagnostics)
+			require.Len(t, diagnostics[0].SuggestedFixes, 1)
+			checker, err := newInlinePackageChecker(pass)
+			require.NoError(t, err)
+			require.NoError(t, checker.check(diagnostics[0].SuggestedFixes[0].TextEdits))
+		})
+	}
+}
+
 func TestInlineCompileGuardPreservesCompatibleBoundaryOwners(t *testing.T) {
 	pass := inlineTestPass(t, map[string]string{"fixture.go": `package fixture; func pair()(int,error){return 1,nil}; func f(){err:=error(nil);if err!=nil{return};value,otherErr:=pair();if otherErr!=nil{return};_=value}`})
 	result, err := buildInlineCompilePlan(pass)
 	require.NoError(t, err)
-	require.Equal(t, originalInlineDiagnostics(pass, "iferrinline"), result.(*inlineCompilePlan).diagnostics["iferrinline"])
+	assertOriginalInlineFixBytes(t, pass, originalInlineDiagnostics(pass, "iferrinline"), result.(*inlineCompilePlan).diagnostics["iferrinline"])
 }
 
 func TestInlinePackageCheckerPreservesLiteralPackageIdentity(t *testing.T) {
@@ -330,7 +628,7 @@ func TestInlineCompileGuardGeneratedImportVisibility(t *testing.T) {
 		require.NoError(t, err)
 		diagnostic := result.(*inlineCompilePlan).diagnostics["iferrinline"][0]
 		if test.safe {
-			require.Equal(t, original[0], diagnostic)
+			assertOriginalInlineFixBytes(t, pass, original[:1], []analysis.Diagnostic{diagnostic})
 		} else {
 			require.Empty(t, diagnostic.SuggestedFixes)
 			require.Contains(t, diagnostic.Message, "manual fix required")
@@ -346,7 +644,7 @@ func named()(value int,err error){value,err=pair();if err!=nil{return};return}
 `})
 	result, err := buildInlineCompilePlan(pass)
 	require.NoError(t, err)
-	require.Equal(t, originalInlineDiagnostics(pass, "iferrinline"), result.(*inlineCompilePlan).diagnostics["iferrinline"])
+	assertOriginalInlineFixBytes(t, pass, originalInlineDiagnostics(pass, "iferrinline"), result.(*inlineCompilePlan).diagnostics["iferrinline"])
 }
 
 func TestInlineCompileGuardNestedCrossRuleEditsAreWithheld(t *testing.T) {

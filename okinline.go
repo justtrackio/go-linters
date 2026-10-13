@@ -15,20 +15,21 @@ func init() {
 type OkInline struct{}
 
 func (p *OkInline) BuildAnalyzers() ([]*analysis.Analyzer, error) {
-	return []*analysis.Analyzer{{
+	plan := newInlineCompilePlanAnalyzer(inlineRule{"okinline", checkedOk})
+	return []*analysis.Analyzer{newOkInlineAnalyzer(plan), plan}, nil
+}
+
+func newOkInlineAnalyzer(plan *analysis.Analyzer) *analysis.Analyzer {
+	return &analysis.Analyzer{
 		Name:     "okinline",
 		Doc:      "reports ok assignments followed by `if !ok` or `if ok` that can be inlined into the if initializer",
-		Run:      p.run,
-		Requires: []*analysis.Analyzer{inlineCompilePlanAnalyzer},
-	}}, nil
+		Run:      func(pass *analysis.Pass) (any, error) { return runInlineCheck(pass, "okinline", plan) },
+		Requires: []*analysis.Analyzer{plan},
+	}
 }
 
 func (p *OkInline) GetLoadMode() string {
 	return register.LoadModeTypesInfo
-}
-
-func (p *OkInline) run(pass *analysis.Pass) (any, error) {
-	return runInlineCheck(pass, "okinline", checkedOk)
 }
 
 func NewOkInline(_ any) (register.LinterPlugin, error) {

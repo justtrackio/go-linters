@@ -242,14 +242,27 @@ are unchanged. When an inferred result has a private type from another package,
 the existing fix can use an exported interface that preserves its public methods.
 If no such interface exists or the choice is ambiguous, no automatic fix is offered.
 
-Both `iferrinline` and `okinline` share a compiler-safety check. It applies the
-proposed edits in memory and type-checks the selected package using its loaded
-imports, language version, and target sizes. Edits that cannot be proven
+Both `iferrinline` and `okinline` use the same compiler-safety check. It applies
+the proposed edits in memory and type-checks the selected package using its
+loaded imports, language version, and target sizes. Edits that cannot be proven
 compiler-safe are withheld; the diagnostic remains and says `manual fix required`.
+
+A standalone plugin checks only its own rule's edits, so a disabled rule cannot
+block its safe fixes. The `justtrack` aggregate shares one plan for both rules
+and also checks their combined edits.
 
 Fixes that share function-level declarations or import edits are checked as a
 group. If the original group cannot compile safely, the group is left unchanged
 rather than generating a different transformation.
+
+Shared declaration and import edits preserve the original resulting source
+bytes, but cover common ownership boundaries so the fixer cannot apply
+conflicting standalone groups together. A deferred group can be applied on a
+later pass. Run read-only lint after `--fix` and repeat as needed; a successful
+`--fix` exit alone does not prove that every fix was applied.
+
+Each plan also has a distinct root cache identity, so changing between the
+aggregate and standalone plugins cannot reuse the other selection's fixes.
 
 This check covers compilation, not semantic equivalence. Review the changes and
 compile the affected production and test packages before committing them.
