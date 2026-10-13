@@ -5,7 +5,10 @@ golangci-lint = []
 
 [tasks.bundle]
 description = "Build the local go-linters bundle with the pinned upstream runner"
-run = "mise exec aqua:golangci/golangci-lint@2.13.1 -- golangci-lint custom"
+run = '''
+mise install aqua:golangci/golangci-lint@2.13.1
+"$(mise which golangci-lint --tool aqua:golangci/golangci-lint@2.13.1)" custom
+'''
 
 [tasks.test]
 description = "Run the Go test suite"

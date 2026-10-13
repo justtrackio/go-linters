@@ -13,7 +13,7 @@ Select the bundle through its full backend name in the target repository's `mise
 [tools]
 # Disable an inherited upstream golangci-lint tool.
 golangci-lint = []
-"github:justtrackio/go-linters" = "0.3.0"
+"github:justtrackio/go-linters" = "0.4.0"
 ```
 
 The version selects a **go-linters release**, not an upstream golangci-lint release.
@@ -91,7 +91,9 @@ mise run bundle
 mise run test-bundle
 ```
 
-`mise run bundle` explicitly executes `mise exec aqua:golangci/golangci-lint@2.13.1 -- golangci-lint custom`.
+`mise run bundle` installs `aqua:golangci/golangci-lint@2.13.1` and invokes the
+binary returned by `mise which golangci-lint --tool aqua:golangci/golangci-lint@2.13.1`.
+The build task does not resolve its runner through PATH.
 `.custom-gcl.yml` pins the upstream version and imports this local checkout.
 The custom binary is written to `./bin/golangci-lint`.
 Analyzer tests use `analysistest` with checked-in Go fixtures and expected fix outputs.
