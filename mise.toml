@@ -1,7 +1,7 @@
 [tools]
 go = "1.27.0"
 golangci-lint = []
-"github:justtrackio/go-linters" = "0.3.0"
+"github:justtrackio/go-linters" = "0.4.0"
 
 [tasks.bundle]
 description = "Build the local go-linters bundle with the pinned upstream runner"
