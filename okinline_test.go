@@ -16,8 +16,6 @@ func TestOkInline(t *testing.T) {
 	require.Equal(t, register.LoadModeTypesInfo, plugin.GetLoadMode())
 	analyzers, err := plugin.BuildAnalyzers()
 	require.NoError(t, err)
-	require.Len(t, analyzers, 1)
-	require.Equal(t, "okinline", analyzers[0].Name)
 
 	analysistest.RunWithSuggestedFixes(t, testdataDir(t), analyzers[0], "testlintdata/okinline")
 }

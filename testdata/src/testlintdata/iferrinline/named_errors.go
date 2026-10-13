@@ -69,9 +69,9 @@ func NamedErrorWithCompanionInLoop(items []int) ([]int, error) {
 
 type conversionError struct{}
 
-func (*conversionError) Error() string { return "conversion failed" }
-
 func concreteError() *conversionError { return nil }
+
+func (*conversionError) Error() string { return "conversion failed" }
 
 func ConcreteErrorVariable() error {
 	convErr := concreteError() // want "if convErr can be inlined into the assignment"

@@ -5,7 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,21 +21,21 @@ func init() {
 type IfErrInline struct{}
 
 func (p *IfErrInline) BuildAnalyzers() ([]*analysis.Analyzer, error) {
-	return []*analysis.Analyzer{
-		{
-			Name: "iferrinline",
-			Doc:  "reports error assignments followed by a non-nil check that can be inlined into the if initializer",
-			Run:  p.run,
-		},
-	}, nil
+	plan := newInlineCompilePlanAnalyzer(inlineRule{"iferrinline", checkedError})
+	return []*analysis.Analyzer{newIfErrInlineAnalyzer(plan), plan}, nil
+}
+
+func newIfErrInlineAnalyzer(plan *analysis.Analyzer) *analysis.Analyzer {
+	return &analysis.Analyzer{
+		Name:     "iferrinline",
+		Doc:      "reports error assignments followed by a non-nil check that can be inlined into the if initializer",
+		Run:      func(pass *analysis.Pass) (any, error) { return runInlineCheck(pass, "iferrinline", plan) },
+		Requires: []*analysis.Analyzer{plan},
+	}
 }
 
 func (p *IfErrInline) GetLoadMode() string {
 	return register.LoadModeTypesInfo
-}
-
-func (p *IfErrInline) run(pass *analysis.Pass) (any, error) {
-	return runInlineCheck(pass, "iferrinline", checkedError)
 }
 
 func NewIfErrInline(_ any) (register.LinterPlugin, error) {
@@ -61,16 +60,10 @@ type declEdit struct {
 
 // runInlineCheck shares scope preservation and suggested fixes between the
 // error and boolean check analyzers.
-func runInlineCheck(pass *analysis.Pass, analyzerName string, checkedVariable func(*analysis.Pass, ast.Expr) *ast.Ident) (any, error) {
-	for _, file := range pass.Files {
-		imports := buildImportMap(file)
-		originalImports := maps.Clone(imports)
-		usedImportNames := collectUsedNamesInFile(file)
-
-		candidates := collectInlineCandidates(pass, file, checkedVariable)
-		declEditByFn := computeInlineDeclarations(pass, file, imports, usedImportNames, candidates)
-		importEdits := buildImportEdits(file, originalImports, imports)
-		reportInlineCandidates(pass, analyzerName, candidates, declEditByFn, importEdits)
+func runInlineCheck(pass *analysis.Pass, analyzerName string, prerequisite *analysis.Analyzer) (any, error) {
+	plan := pass.ResultOf[prerequisite].(*inlineCompilePlan)
+	for _, diagnostic := range plan.diagnostics[analyzerName] {
+		pass.Report(diagnostic)
 	}
 
 	return nil, nil

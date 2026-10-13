@@ -21,15 +21,14 @@ func (*JustTrackPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	var err error
 
 	constructors := []func(any) (register.LinterPlugin, error){
+		NewCfgSecret,
 		NewNoAnonStruct,
-		NewIfErrInline,
 		NewFuncMethod,
-		NewOkInline,
 		NewMethodFileCheck,
 		NewMultilineBlock,
 		NewRecvAfterType,
 	}
-	analyzers := make([]*analysis.Analyzer, 0, len(constructors))
+	analyzers := make([]*analysis.Analyzer, 0, len(constructors)+2)
 
 	for _, constructor := range constructors {
 		if plugin, err = constructor(nil); err != nil {
@@ -42,6 +41,9 @@ func (*JustTrackPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 
 		analyzers = append(analyzers, pluginAnalyzers...)
 	}
+
+	plan := newInlineCompilePlanAnalyzer(inlineRule{"iferrinline", checkedError}, inlineRule{"okinline", checkedOk})
+	analyzers = append(analyzers, newIfErrInlineAnalyzer(plan), newOkInlineAnalyzer(plan), plan)
 
 	return analyzers, nil
 }

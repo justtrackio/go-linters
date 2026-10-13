@@ -1,6 +1,6 @@
 # go-linters
 
-Custom golangci-lint bundle containing the `funcmethod`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `recvaftertype` analyzers.
+Custom golangci-lint bundle containing the `cfgsecret`, `funcmethod`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `recvaftertype` analyzers.
 
 ## Install with mise
 
@@ -63,6 +63,7 @@ New releases can introduce lint failures on unchanged branches.
 
 | Rule | Autofix support |
 | --- | --- |
+| `cfgsecret` | No |
 | `funcmethod` | No |
 | `iferrinline` | **Yes**, when a safe fix can be generated |
 | `methodfilecheck` | No |
@@ -91,7 +92,8 @@ mise run test-bundle
 The custom binary is written to `./bin/golangci-lint`.
 Analyzer tests use `analysistest` with checked-in Go fixtures and expected fix outputs.
 The Go bundle integration test reuses these fixtures to check diagnostics and real `--fix` behavior.
-It compares formatted golden files, compiles corrected packages, and verifies that they lint cleanly.
+It compiles the actual corrected packages and checks that only the expected
+manual-fix diagnostics remain. Per-rule tests check the exact golden output.
 
 Run the custom binary from the project that you want to lint:
 
@@ -118,6 +120,54 @@ The bundle release version and embedded golangci-lint version are separate.
 Keep the builder pin in `mise.toml`, the version in `.custom-gcl.yml`,
 and the upstream license URL in the workflow aligned when upgrading golangci-lint.
 Each archive includes the upstream runner's GPLv3 license as `LICENSE.golangci-lint`.
+
+## cfgsecret
+
+**Autofix: No.**
+
+Reports exported fields with a `cfg` tag when the field name or config key
+looks like a credential but the tag has no `secret` option:
+
+```go
+type ClientSettings struct {
+    APIKey string `cfg:"api_key"`        // reported
+    Password string `cfg:"password,secret"` // redacted
+    AccessKeyID string `cfg:"access_key_id"` // public identifier
+}
+```
+
+Add `secret` manually when the field contains credentials. Gosoline accepts
+`cfg:"name,secret"`, including an empty name, whitespace around options, and
+case-insensitive `secret`. A key named `secret` is not a redaction option.
+Other tags, `secrets`, or `secret=true` do not enable redaction.
+
+The rule removes separators and ignores case for name matching. For a dotted
+config selector it checks the last component. It reports names ending in
+`password`, `passwd`, `passphrase`, `secret`, `privatekey`, `apikey`, `secretkey`,
+`secretaccesskey`, or `signingkey`. It also reports these complete names:
+
+- `token`, `authtoken`, `accesstoken`, `refreshtoken`, `sessiontoken`,
+  `bearertoken`, `apitoken`, `clienttoken`, `idtoken`, `jwttoken`,
+  `personalaccesstoken`;
+- `authorization`, `proxyauthorization`, `authkeys`, `apiauthkeys`,
+  `basicauthusers`, `apiauthbasicusers`.
+
+Public keys, access-key IDs, secret names/ARNs/files, token expiry/URLs/counts,
+and pagination/continuation tokens do not match these rules. Generic `headers`
+maps are not classified as credentials. If a map contains authorization headers
+or other secrets, annotate it manually.
+
+Untagged and unexported fields are outside the rule. A secret parent covers its
+inline struct subtree, including pointers, arrays, slices, and maps. Named
+struct types are checked independently because another config path can reuse
+them without a secret parent. Gosoline ignores tag options on embedded fields;
+annotate their mapped child fields instead.
+
+This is a name-based check, not a proof that all secrets are protected. Opaque
+names, credentials inside URLs, and raw getter values need manual review.
+The rule does not prove that types were registered before config logging.
+For a non-secret value with a credential-like name, use a narrow
+`//nolint:cfgsecret` with a reason. `--fix` never changes its tags.
 
 ## funcmethod
 
@@ -213,12 +263,13 @@ if err != nil { ... }
 if x, err := bar(); err != nil { ... }
 ```
 
-When some companion variable (e.g. `x`) is still used after the `if`, the
-diagnostic instead suggests hoisting it to a `var` declaration at the top of
-the enclosing function and switching the assignment to `=`:
+When a companion variable (e.g. `x`) is used after the `if`, the fix hoists the
+variables to declarations at the top of the enclosing function and switches
+the assignment to `=`:
 
 ```go
 var x SomeType
+var err error
 // ...
 if x, err = bar(); err != nil { ... }
 use(x)
@@ -235,16 +286,35 @@ cd /path/to/some/other/repo
 /path/to/go-linters/bin/golangci-lint run --fix ./...
 ```
 
-When an inferred result has a private type from another package, the fix uses
-an exported interface from that package that preserves all public methods.
-If no such interface exists or the choice is ambiguous, the diagnostic has no
-automatic fix instead of generating an inaccessible type name.
+The existing hoisting, declaration ordering, renames, imports, and type rendering
+are unchanged. When an inferred result has a private type from another package,
+the existing fix can use an exported interface that preserves its public methods.
+If no such interface exists or the choice is ambiguous, no automatic fix is offered.
 
-The hoist case is also autofixed: the analyzer uses type info to emit one
-`var <name> <type>` per hoisted variable at the top of the enclosing
-function and switches the assignment to `=`. It adds imports when a hoisted variable's type references a package that
-isn't imported in the current file, choosing an alias that avoids name collisions. Same-line trailing comments on the
-assignment are dropped by the rewrite.
+Both `iferrinline` and `okinline` use the same compiler-safety check. It applies
+the proposed edits in memory and type-checks the selected package using its
+loaded imports, language version, and target sizes. Edits that cannot be proven
+compiler-safe are withheld; the diagnostic remains and says `manual fix required`.
+
+A standalone plugin checks only its own rule's edits, so a disabled rule cannot
+block its safe fixes. The `justtrack` aggregate shares one plan for both rules
+and also checks their combined edits.
+
+Fixes that share function-level declarations or import edits are checked as a
+group. If the original group cannot compile safely, the group is left unchanged
+rather than generating a different transformation.
+
+Shared declaration and import edits preserve the original resulting source
+bytes, but cover common ownership boundaries so the fixer cannot apply
+conflicting standalone groups together. A deferred group can be applied on a
+later pass. Run read-only lint after `--fix` and repeat as needed; a successful
+`--fix` exit alone does not prove that every fix was applied.
+
+Each plan also has a distinct root cache identity, so changing between the
+aggregate and standalone plugins cannot reuse the other selection's fixes.
+
+This check covers compilation, not semantic equivalence. Review the changes and
+compile the affected production and test packages before committing them.
 
 ## methodfilecheck
 
