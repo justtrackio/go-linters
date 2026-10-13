@@ -22,6 +22,7 @@ func inlineTestPass(t *testing.T, sources map[string]string) *analysis.Pass {
 	t.Helper()
 	fset := token.NewFileSet()
 	var files []*ast.File
+
 	// Fixed ordering makes ownership and package versions reproducible.
 	for _, name := range []string{"fixture.go", "extra.go"} {
 		if source, ok := sources[name]; ok {
@@ -30,6 +31,7 @@ func inlineTestPass(t *testing.T, sources map[string]string) *analysis.Pass {
 			files = append(files, file)
 		}
 	}
+
 	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}, Implicits: map[ast.Node]types.Object{}, Scopes: map[ast.Node]*types.Scope{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
 	sizes := types.SizesFor("gc", "386")
 	config := types.Config{Sizes: sizes, GoVersion: "go1.23"}
@@ -40,6 +42,7 @@ func inlineTestPass(t *testing.T, sources map[string]string) *analysis.Pass {
 			if source, ok := sources[name]; ok {
 				return []byte(source), nil
 			}
+
 			return nil, fmt.Errorf("missing source %s", name)
 		}, Report: func(analysis.Diagnostic) {}}
 }
@@ -49,9 +52,11 @@ func originalInlineDiagnostics(pass *analysis.Pass, rule string) []analysis.Diag
 	staging := *pass
 	staging.Report = func(d analysis.Diagnostic) { diagnostics = append(diagnostics, d) }
 	check := checkedError
+
 	if rule == "okinline" {
 		check = checkedOk
 	}
+
 	for _, file := range pass.Files {
 		imports := buildImportMap(file)
 		original := maps.Clone(imports)
@@ -59,30 +64,36 @@ func originalInlineDiagnostics(pass *analysis.Pass, rule string) []analysis.Diag
 		decls := computeInlineDeclarations(pass, file, imports, collectUsedNamesInFile(file), candidates)
 		reportInlineCandidates(&staging, rule, candidates, decls, buildImportEdits(file, original, imports))
 	}
+
 	return diagnostics
 }
 
 func inlineTestEditedSources(t *testing.T, pass *analysis.Pass, edits []analysis.TextEdit) map[string]string {
 	t.Helper()
 	sources := map[string]string{}
+
 	for _, file := range pass.Files {
 		selected := []analysis.TextEdit{}
 		tokenFile := pass.Fset.File(file.Pos())
 		source, err := pass.ReadFile(tokenFile.Name())
 		require.NoError(t, err)
+
 		for _, edit := range edits {
 			if pass.Fset.File(edit.Pos) == tokenFile {
 				selected = append(selected, edit)
 			}
 		}
+
 		sort.SliceStable(selected, func(i, j int) bool {
 			if selected[i].Pos != selected[j].Pos {
 				return selected[i].Pos < selected[j].Pos
 			}
+
 			return selected[i].End < selected[j].End
 		})
 		var fixed strings.Builder
 		cursor := 0
+
 		for _, edit := range selected {
 			start, end := tokenFile.Offset(edit.Pos), tokenFile.Offset(edit.End)
 			require.GreaterOrEqual(t, start, cursor)
@@ -92,9 +103,11 @@ func inlineTestEditedSources(t *testing.T, pass *analysis.Pass, edits []analysis
 			fixed.Write(edit.NewText)
 			cursor = end
 		}
+
 		fixed.Write(source[cursor:])
 		sources[tokenFile.Name()] = fixed.String()
 	}
+
 	return sources
 }
 
@@ -102,6 +115,7 @@ func assertOriginalInlineFixBytes(t *testing.T, pass *analysis.Pass, original, g
 	t.Helper()
 	require.Len(t, guarded, len(original))
 	var originalEdits, guardedEdits []analysis.TextEdit
+
 	for i, before := range original {
 		after := guarded[i]
 		beforeFixes, afterFixes := before.SuggestedFixes, after.SuggestedFixes
@@ -109,14 +123,17 @@ func assertOriginalInlineFixBytes(t *testing.T, pass *analysis.Pass, original, g
 		require.Equal(t, before.End, after.End)
 		require.Equal(t, before.Category, after.Category)
 		require.Len(t, afterFixes, len(beforeFixes))
+
 		for j, fix := range beforeFixes {
 			require.Equal(t, inlineTestEditedSources(t, pass, fix.TextEdits), inlineTestEditedSources(t, pass, afterFixes[j].TextEdits))
 		}
+
 		if len(beforeFixes) > 0 {
 			originalEdits = append(originalEdits, beforeFixes[0].TextEdits...)
 			guardedEdits = append(guardedEdits, afterFixes[0].TextEdits...)
 		}
 	}
+
 	require.Equal(t, inlineTestEditedSources(t, pass, originalEdits), inlineTestEditedSources(t, pass, guardedEdits))
 }
 
@@ -238,9 +255,11 @@ func runInlineTestAnalyzer(t *testing.T, pass *analysis.Pass, analyzer *analysis
 		if _, exists := results[current]; exists {
 			return
 		}
+
 		for _, prerequisite := range current.Requires {
 			run(prerequisite)
 		}
+
 		selected := *pass
 		selected.Analyzer = current
 		selected.ResultOf = results
@@ -260,11 +279,13 @@ func TestStandaloneInlineRulesPreserveSafeSameFunctionHoists(t *testing.T) {
 				pass := inlineTestPass(t, map[string]string{"fixture.go": fixture.source})
 				var analyzers []*analysis.Analyzer
 				var err error
+
 				if rule == "iferrinline" {
 					analyzers, err = (&IfErrInline{}).BuildAnalyzers()
 				} else {
 					analyzers, err = (&OkInline{}).BuildAnalyzers()
 				}
+
 				require.NoError(t, err)
 				diagnostics := runInlineTestAnalyzer(t, pass, analyzers[0])
 				require.Len(t, diagnostics, 1)
@@ -284,10 +305,12 @@ func TestAggregateInlineRulesWithholdCompetingSameFunctionHoists(t *testing.T) {
 			pass := inlineTestPass(t, map[string]string{"fixture.go": fixture.source})
 			analyzers, err := (&JustTrackPlugin{}).BuildAnalyzers()
 			require.NoError(t, err)
+
 			for _, analyzer := range analyzers {
 				if analyzer.Name != "iferrinline" && analyzer.Name != "okinline" {
 					continue
 				}
+
 				diagnostics := runInlineTestAnalyzer(t, pass, analyzer)
 				require.Len(t, diagnostics, 1)
 				original := originalInlineDiagnostics(pass, analyzer.Name)[0]
@@ -313,13 +336,16 @@ func more() { err := error(nil); if err != nil { return } }
 	require.NoError(t, err)
 	plan := result.(*inlineCompilePlan)
 	var combined []analysis.TextEdit
+
 	for _, rule := range []string{"iferrinline", "okinline"} {
 		original := originalInlineDiagnostics(pass, rule)
 		assertOriginalInlineFixBytes(t, pass, original, plan.diagnostics[rule])
+
 		for _, d := range plan.diagnostics[rule] {
 			combined = append(combined, d.SuggestedFixes[0].TextEdits...)
 		}
 	}
+
 	checker, err := newInlinePackageChecker(pass)
 	require.NoError(t, err)
 	require.NoError(t, checker.check(combined))
@@ -332,6 +358,7 @@ func TestInlineCompileGuardWithholdsWholeFunctionKeepsDisjointFix(t *testing.T) 
 			if rule == "okinline" {
 				checked, condition, typ, result = "ok", "!ok", "bool", "true"
 			}
+
 			source := fmt.Sprintf(`package fixture
 func pair() (int,%s) { return 1,%s }
 func unsafe() {
@@ -347,18 +374,22 @@ func safe() { %s := %s(%s); if %s { return } }
 			checker, err := newInlinePackageChecker(pass)
 			require.NoError(t, err)
 			var originalEdits []analysis.TextEdit
+
 			for _, d := range original {
 				originalEdits = append(originalEdits, d.SuggestedFixes[0].TextEdits...)
 			}
+
 			err = checker.check(originalEdits)
 			require.ErrorContains(t, err, "no new variables")
 			planResult, err := buildInlineCompilePlan(pass)
 			require.NoError(t, err)
 			diagnostics := planResult.(*inlineCompilePlan).diagnostics[rule]
+
 			for _, d := range diagnostics[:2] {
 				require.Empty(t, d.SuggestedFixes)
 				require.Contains(t, d.Message, "manual fix required")
 			}
+
 			assertOriginalInlineFixBytes(t, pass, original[2:], diagnostics[2:])
 			require.NoError(t, checker.check(diagnostics[2].SuggestedFixes[0].TextEdits))
 		})
@@ -378,10 +409,12 @@ func safe() { err := error(nil); if err != nil { return } }
 	result, err := buildInlineCompilePlan(pass)
 	require.NoError(t, err)
 	plan := result.(*inlineCompilePlan)
+
 	for _, rule := range []string{"iferrinline", "okinline"} {
 		require.Empty(t, plan.diagnostics[rule][0].SuggestedFixes)
 		require.Contains(t, plan.diagnostics[rule][0].Message, "manual fix required")
 	}
+
 	require.NotEmpty(t, plan.diagnostics["iferrinline"][1].SuggestedFixes)
 }
 
@@ -401,6 +434,7 @@ func TestInlineCompileGuardFailsClosed(t *testing.T) {
 					return []byte(strings.ReplaceAll(string(data), "error(nil)", "wrong(nil)")), err
 				}
 			}
+
 			result, err := buildInlineCompilePlan(pass)
 			require.NoError(t, err)
 			d := result.(*inlineCompilePlan).diagnostics["iferrinline"][0]
@@ -469,6 +503,7 @@ func TestInlineCompileGuardSharedImportOwnerAndTransitiveTypes(t *testing.T) {
 	require.NoError(t, checker.check(original[0].SuggestedFixes[0].TextEdits), "safe original import owner uses a newly emitted transitive import")
 	result, err := buildInlineCompilePlan(pass)
 	require.NoError(t, err)
+
 	for _, diagnostic := range result.(*inlineCompilePlan).diagnostics["iferrinline"] {
 		require.Empty(t, diagnostic.SuggestedFixes, "the unsafe consumer must withhold its shared import owner too")
 	}
@@ -493,10 +528,12 @@ func TestInlineCompileGuardPreservesOriginalImportInsertionBytes(t *testing.T) {
 	diagnostics := result.(*inlineCompilePlan).diagnostics["iferrinline"]
 	assertOriginalInlineFixBytes(t, pass, original, diagnostics)
 	var edits []analysis.TextEdit
+
 	for _, diagnostic := range diagnostics {
 		require.Len(t, diagnostic.SuggestedFixes, 1)
 		edits = append(edits, diagnostic.SuggestedFixes[0].TextEdits...)
 	}
+
 	checker, err := newInlinePackageChecker(pass)
 	require.NoError(t, err)
 	require.NoError(t, checker.check(edits))
@@ -519,6 +556,7 @@ func TestStandaloneInlineSharedImportOwnersPreserveOriginalBytes(t *testing.T) {
 	require.Empty(t, loaded[0].Errors)
 	pkg := loaded[0]
 	pass := &analysis.Pass{Fset: pkg.Fset, Files: pkg.Syntax, Pkg: pkg.Types, TypesInfo: pkg.TypesInfo, TypesSizes: pkg.TypesSizes, ReadFile: os.ReadFile, Report: func(analysis.Diagnostic) {}}
+
 	for _, rule := range []inlineRule{{"iferrinline", checkedError}, {"okinline", checkedOk}} {
 		t.Run(rule.name, func(t *testing.T) {
 			result, err := newInlineCompilePlanAnalyzer(rule).Run(pass)
@@ -627,6 +665,7 @@ func TestInlineCompileGuardGeneratedImportVisibility(t *testing.T) {
 		result, err := buildInlineCompilePlan(pass)
 		require.NoError(t, err)
 		diagnostic := result.(*inlineCompilePlan).diagnostics["iferrinline"][0]
+
 		if test.safe {
 			assertOriginalInlineFixBytes(t, pass, original[:1], []analysis.Diagnostic{diagnostic})
 		} else {
@@ -653,6 +692,7 @@ func f(flag bool){ value,err:=func()(int,error){ok:=flag;if !ok{return 0,nil};re
 `})
 	result, err := buildInlineCompilePlan(pass)
 	require.NoError(t, err)
+
 	for _, rule := range []string{"iferrinline", "okinline"} {
 		diagnostics := result.(*inlineCompilePlan).diagnostics[rule]
 		require.Len(t, diagnostics, 1)

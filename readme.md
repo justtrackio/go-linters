@@ -99,6 +99,17 @@ The Go bundle integration test reuses these fixtures to check diagnostics and re
 It compiles the actual corrected packages and checks that only the expected
 manual-fix diagnostics remain. Per-rule tests check the exact golden output.
 
+For self-linting, run this command from the checkout:
+
+```sh
+mise exec -- golangci-lint run --build-tags integration,fixtures \
+  --max-issues-per-linter=0 --max-same-issues=0 --uniq-by-line=false ./...
+```
+
+This includes integration tests and reports all findings. The repository's
+`.golangci.yml` enables the company rules. Analyzer source and tests must pass
+without suppressions or changes to the test fixtures.
+
 Run the custom binary from the project that you want to lint:
 
 ```sh
