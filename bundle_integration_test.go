@@ -67,7 +67,9 @@ func TestBundle(t *testing.T) {
 	}
 
 	require.True(t, hasBundleIssueAt(issues, "testlintdata/noanonstruct/structs.go", 12), "expected the existing non-fixable noanonstruct diagnostic")
-	require.True(t, hasBundleIssueInPackage(issues, "./testlintdata/cfgsecret"), "expected config secret diagnostics through justtrack")
+	for _, issue := range issues {
+		require.False(t, strings.HasPrefix(issue.Text, "cfgsecret:"), "cfgsecret must remain opt-in, not part of justtrack")
+	}
 
 	fix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
 	require.Equal(t, 1, fix.exitCode, "expected only withheld manual findings after --fix; stdout:\n%s\nstderr:\n%s", fix.stdout, fix.stderr)

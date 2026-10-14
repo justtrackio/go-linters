@@ -1,8 +1,8 @@
 # Add a linter
 
 1. Implement the analyzer with the existing `go/analysis` plugin pattern.
-   Add it to `JustTrackPlugin.BuildAnalyzers` in `justtrack.go`.
-   Keep the aggregate load mode sufficient for every analyzer.
+   Add active rules to `JustTrackPlugin.BuildAnalyzers` in `justtrack.go`.
+   Keep the aggregate load mode sufficient for every active analyzer.
 
 2. Add Go fixtures under `testdata/src/testlintdata/<rule>/`.
    Mark expected diagnostics with `// want "diagnostic pattern"`.
@@ -32,4 +32,5 @@
 
 6. Merge the change and publish a new `v*` tag.
    Consumers enable `justtrack` once and update the bundle version or refresh `latest`.
-   No new lint command or per-rule consumer configuration is required.
+   Active aggregate rules need no new lint command or per-rule consumer configuration.
+   Standalone-only rules such as the temporarily excluded `cfgsecret` require explicit opt-in.

@@ -15,7 +15,7 @@ Select the bundle through its full backend name in the target repository's `mise
 disable_tools = ["golangci-lint"]
 
 [tools]
-"github:justtrackio/go-linters" = "0.4.0"
+"github:justtrackio/go-linters" = "0.4.1"
 ```
 
 The version selects a **go-linters release**, not an upstream golangci-lint release.
@@ -44,10 +44,10 @@ linters:
         original-url: github.com/justtrackio/go-linters
 ```
 
-The `justtrack` plugin runs every analyzer in the bundle.
-Repositories configure it once, including when later releases add rules.
-The individual plugins remain available for selective use.
-Enable either the aggregate or individual plugins, not both.
+The `justtrack` plugin runs the active company analyzers in the bundle.
+`cfgsecret` is temporarily excluded while cfg secret-tag adoption is reviewed.
+It remains available for opt-in standalone use, including alongside `justtrack`.
+Do not enable individual plugins already included in the aggregate.
 
 Existing lint commands remain unchanged when mise is activated or its shims are on `PATH`.
 For an isolated shell, load the repository's tooling explicitly:
@@ -65,7 +65,7 @@ New releases can introduce lint failures on unchanged branches.
 
 | Rule | Autofix support |
 | --- | --- |
-| `cfgsecret` | No |
+| `cfgsecret` (standalone opt-in; temporarily excluded from `justtrack`) | No |
 | `funcmethod` | No |
 | `iferrinline` | **Yes**, when a safe fix can be generated |
 | `methodfilecheck` | No |
@@ -143,6 +143,9 @@ Each archive includes the upstream runner's GPLv3 license as `LICENSE.golangci-l
 ## cfgsecret
 
 **Autofix: No.**
+
+Temporarily disabled in the `justtrack` aggregate. Enable the standalone
+`cfgsecret` module explicitly to use this rule.
 
 Reports exported fields with a `cfg` tag when the field name or config key
 looks like a credential but the tag has no `secret` option:
