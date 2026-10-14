@@ -33,4 +33,3 @@
 6. Merge the change and publish a new `v*` tag.
    Consumers enable `justtrack` once and update the bundle version or refresh `latest`.
    Active aggregate rules need no new lint command or per-rule consumer configuration.
-   Standalone-only rules such as the temporarily excluded `cfgsecret` require explicit opt-in.

@@ -67,9 +67,6 @@ func TestBundle(t *testing.T) {
 	}
 
 	require.True(t, hasBundleIssueAt(issues, "testlintdata/noanonstruct/structs.go", 12), "expected the existing non-fixable noanonstruct diagnostic")
-	for _, issue := range issues {
-		require.False(t, strings.HasPrefix(issue.Text, "cfgsecret:"), "cfgsecret must remain opt-in, not part of justtrack")
-	}
 
 	fix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
 	require.Equal(t, 1, fix.exitCode, "expected only withheld manual findings after --fix; stdout:\n%s\nstderr:\n%s", fix.stdout, fix.stderr)
@@ -82,30 +79,6 @@ func TestBundle(t *testing.T) {
 	clean := runBundleCommand(t, binary, lintArgs(repoRoot, false, fixablePackages), sourceRoot, env)
 	require.Equal(t, 1, clean.exitCode, "expected only withheld manual findings; stdout:\n%s\nstderr:\n%s", clean.stdout, clean.stderr)
 	assertInlineGuardManualIssues(t, decodeBundleIssues(t, clean))
-}
-
-func TestBundleCfgSecretDoesNotFix(t *testing.T) {
-	binary := os.Getenv("GOLANGCI_LINT_BINARY")
-	require.NotEmpty(t, binary)
-	require.True(t, filepath.IsAbs(binary))
-	source, err := os.ReadFile(filepath.Join(testdataDir(t), "src", "testlintdata", "cfgsecret", "settings.go"))
-	require.NoError(t, err)
-	workspace, sourceRoot, filename, env := inlineBundleWorkspace(t, string(source))
-	config := writeInlineBundleConfig(t, workspace, []string{"cfgsecret"})
-	fixed := runBundleCommand(t, binary, inlineBundleArgs(config, true), sourceRoot, env)
-	require.Equal(t, 1, fixed.exitCode, "report-only findings must remain; stdout:\n%s\nstderr:\n%s", fixed.stdout, fixed.stderr)
-	issues := decodeBundleIssues(t, fixed)
-	require.Len(t, issues, 19)
-
-	for _, issue := range issues {
-		require.Equal(t, "cfgsecret", issue.FromLinter)
-	}
-
-	after, err := os.ReadFile(filename)
-	require.NoError(t, err)
-	require.Equal(t, source, after, "--fix must not modify credential tags")
-	build := runBundleCommand(t, "go", []string{"build", "./fixture"}, sourceRoot, env)
-	require.Equal(t, 0, build.exitCode, "stdout:\n%s\nstderr:\n%s", build.stdout, build.stderr)
 }
 
 func TestBundleSelectiveInlineRules(t *testing.T) {
@@ -170,7 +143,7 @@ func TestBundleInlineSelectionCacheIsolation(t *testing.T) {
 	binary := os.Getenv("GOLANGCI_LINT_BINARY")
 	require.NotEmpty(t, binary)
 	require.True(t, filepath.IsAbs(binary))
-	standalone := []string{"cfgsecret", "noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "recvaftertype"}
+	standalone := []string{"noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "recvaftertype"}
 
 	for _, direction := range []struct {
 		name         string
@@ -241,7 +214,7 @@ func writeInlineBundleConfig(t *testing.T, workspace string, selection []string)
 	}
 
 	config += "  settings:\n    custom:\n"
-	for _, plugin := range []string{"justtrack", "cfgsecret", "noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "recvaftertype"} {
+	for _, plugin := range []string{"justtrack", "noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "recvaftertype"} {
 		config += "      " + plugin + ":\n        type: module\n        description: inline regression\n        original-url: github.com/justtrackio/go-linters\n"
 	}
 

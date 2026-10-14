@@ -21,8 +21,6 @@ func (*JustTrackPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	var err error
 
 	constructors := []func(any) (register.LinterPlugin, error){
-		// Temporarily disabled in the aggregate while cfg secret-tag adoption is reviewed.
-		// NewCfgSecret,
 		NewNoAnonStruct,
 		NewFuncMethod,
 		NewMethodFileCheck,
