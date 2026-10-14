@@ -184,8 +184,8 @@ func ParamShadow(svc *widget.Service) error {
 }
 
 func ExistingVarBlockReorder() error {
-	var err error
 	var x int
+	var err error
 	var a int
 
 	if a, err = bar(); err != nil {

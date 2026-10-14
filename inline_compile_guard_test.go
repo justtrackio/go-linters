@@ -459,12 +459,9 @@ func TestInlinePackageCheckerCompilerFailureClasses(t *testing.T) {
 	}
 }
 
-func TestInlineCompileGuardOriginalUndefinedAndUnusedBindings(t *testing.T) {
+func TestInlineCompileGuardOriginalUndefinedBindings(t *testing.T) {
 	for _, test := range []struct{ rule, body, message string }{
 		{"iferrinline", `{ value,err := pair(); if err != nil { return }; _ = value }; var err error; _ = err`, "undefined: err"},
-		{"iferrinline", `var err error; var saved = err; _ = saved; value,failure := pair(); if failure != nil { return }; _ = value`, "declared and not used: err"},
-		{"iferrinline", `var ok = true; var saved = ok; _ = saved; value,err := pair(); if err != nil { return }; _ = value`, "declared and not used: ok"},
-		{"okinline", `var err error; var saved = err; _ = saved; value,ok := lookup(); if !ok { return }; _ = value`, "declared and not used: err"},
 		{"okinline", `{ value,ok := lookup(); if !ok { return }; _ = value }; var ok bool; _ = ok`, "undefined: ok"},
 	} {
 		pass := inlineTestPass(t, map[string]string{"fixture.go": "package fixture\nfunc pair()(int,error){return 1,nil}\nfunc lookup()(int,bool){return 1,true}\nfunc f(){" + test.body + "}\n"})

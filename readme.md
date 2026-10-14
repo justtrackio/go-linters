@@ -15,7 +15,7 @@ Select the bundle through its full backend name in the target repository's `mise
 disable_tools = ["golangci-lint"]
 
 [tools]
-"github:justtrackio/go-linters" = "0.4.1"
+"github:justtrackio/go-linters" = "0.4.2"
 ```
 
 The version selects a **go-linters release**, not an upstream golangci-lint release.
@@ -254,10 +254,14 @@ cd /path/to/some/other/repo
 /path/to/go-linters/bin/golangci-lint run --fix ./...
 ```
 
-The existing hoisting, declaration ordering, renames, imports, and type rendering
-are unchanged. When an inferred result has a private type from another package,
-the existing fix can use an exported interface that preserves its public methods.
-If no such interface exists or the choice is ambiguous, no automatic fix is offered.
+New declarations retain the existing function-top hoisting, renames, imports,
+and type rendering. Existing leading `var` declarations remain unchanged;
+generated declarations follow them. Initializers, inferred types, grouped
+declarations, comments, and evaluation order are preserved.
+
+When an inferred result has a private type from another package, the existing
+fix can use an exported interface that preserves its public methods. If no such
+interface exists or the choice is ambiguous, no automatic fix is offered.
 
 Both `iferrinline` and `okinline` use the same compiler-safety check. It applies
 the proposed edits in memory and type-checks the selected package using its

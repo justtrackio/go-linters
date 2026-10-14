@@ -1,6 +1,7 @@
 package linters
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -484,7 +485,6 @@ func hoistWouldShadow(pass *analysis.Pass, fnBody *ast.BlockStmt, name string, o
 func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]string, usedImportNames map[string]bool, candidates []candidate, idxs []int) (declEdit, bool) {
 	var ok bool
 	var newCollected []hoistDeclaration
-	var existingCollected []hoistDeclaration
 
 	if pass.TypesInfo == nil || len(idxs) == 0 {
 		return declEdit{}, false
@@ -517,16 +517,11 @@ func computeDeclEdit(pass *analysis.Pass, file *ast.File, imports map[string]str
 		return declEdit{}, true
 	}
 
-	if existingCollected, ok = collectExistingHoistDeclarations(pass, topStmts, qualPkgs); !ok {
-		return declEdit{}, false
-	}
-
-	existingCollected = append(existingCollected, newCollected...)
-	sort.SliceStable(existingCollected, func(i, j int) bool {
-		return varPriority(existingCollected[i].name) < varPriority(existingCollected[j].name)
+	sort.SliceStable(newCollected, func(i, j int) bool {
+		return varPriority(newCollected[i].name) < varPriority(newCollected[j].name)
 	})
 
-	return renderHoistDeclarations(fnBody, topStmts, existingCollected), true
+	return renderHoistDeclarations(pass, file, fnBody, topStmts, newCollected)
 }
 
 type hoistDeclaration struct {
@@ -616,67 +611,122 @@ func hoistRenamedName(c candidate, name string) string {
 	return name
 }
 
-func collectExistingHoistDeclarations(pass *analysis.Pass, topStmts []ast.Stmt, qualifier types.Qualifier) ([]hoistDeclaration, bool) {
-	var ok bool
-	var declType types.Type
-	var vs *ast.ValueSpec
-	var collected []hoistDeclaration
-
-	for _, stmt := range topStmts {
-		decl := stmt.(*ast.DeclStmt)
-		gen := decl.Decl.(*ast.GenDecl)
-
-		for _, spec := range gen.Specs {
-			if vs, ok = spec.(*ast.ValueSpec); !ok {
-				continue
-			}
-
-			for _, n := range vs.Names {
-				obj := pass.TypesInfo.Defs[n]
-				if obj == nil {
-					continue
-				}
-
-				if declType, ok = accessibleHoistType(obj.Type(), pass.Pkg); !ok {
-					return nil, false
-				}
-
-				typeStr := types.TypeString(declType, qualifier)
-				collected = append(collected, hoistDeclaration{name: n.Name, typ: typeStr})
-			}
+// inlineCommentEnd uses physical source offsets: ast.Comment.End may fall
+// inside a CRLF comment because the parser strips carriage returns from Text.
+func inlineCommentEnd(source []byte, offset, limit int) (int, bool) {
+	if offset < 0 || offset+1 >= limit || limit > len(source) || source[offset] != '/' {
+		return 0, false
+	}
+	switch source[offset+1] {
+	case '/':
+		newline := bytes.IndexByte(source[offset+2:limit], '\n')
+		if newline >= 0 {
+			return offset + newline + 2, true
+		}
+	case '*':
+		end := bytes.Index(source[offset+2:limit], []byte("*/"))
+		if end >= 0 {
+			return offset + end + 4, true
 		}
 	}
-
-	return collected, true
+	return 0, false
 }
 
-func renderHoistDeclarations(fnBody *ast.BlockStmt, topStmts []ast.Stmt, combined []hoistDeclaration) declEdit {
-	var b strings.Builder
-	var pos, end token.Pos
-
-	if len(topStmts) > 0 {
-		pos = topStmts[0].Pos()
-		end = topStmts[len(topStmts)-1].End()
-
-		for i, e := range combined {
-			if i > 0 {
-				b.WriteString("\n\t")
-			}
-
-			b.WriteString("var " + e.name + " " + e.typ)
-		}
-	} else {
-		pos = fnBody.Lbrace + 1
-		end = pos
-
-		for _, e := range combined {
-			b.WriteString("\n\tvar " + e.name + " " + e.typ)
-		}
-
-		b.WriteString("\n")
+// hoistInsertionPosition leaves the original var prefix and its trailing
+// comments untouched. New bindings begin only after its initializers, and
+// comments belonging to the next statement stay after the new declarations.
+func hoistInsertionPosition(pass *analysis.Pass, file *ast.File, fnBody *ast.BlockStmt, topStmts []ast.Stmt) (token.Pos, bool, bool) {
+	pos := topStmts[len(topStmts)-1].End()
+	next := fnBody.Rbrace
+	if len(topStmts) < len(fnBody.List) {
+		next = fnBody.List[len(topStmts)].Pos()
 	}
 
-	return declEdit{pos: pos, end: end, text: b.String()}
+	tokenFile := pass.Fset.File(pos)
+	if tokenFile == nil || pass.ReadFile == nil {
+		return token.NoPos, false, false
+	}
+	source, err := pass.ReadFile(tokenFile.Name())
+	if err != nil || len(source) != tokenFile.Size() || next < pos || next > tokenFile.Pos(len(source)) {
+		return token.NoPos, false, false
+	}
+
+	limit := tokenFile.Offset(next)
+	lastLine := tokenFile.Line(pos)
+	nextLine := tokenFile.Line(next)
+	for _, group := range file.Comments {
+		if group.Pos() < pos || group.Pos() >= next {
+			continue
+		}
+		var end int
+		for _, comment := range group.List {
+			var ok bool
+			end, ok = inlineCommentEnd(source, tokenFile.Offset(comment.Pos()), limit)
+			if !ok {
+				return token.NoPos, false, false
+			}
+		}
+		groupEnd := tokenFile.Pos(end)
+		startLine := tokenFile.Line(group.Pos())
+		endLine := tokenFile.Line(groupEnd)
+		if startLine == lastLine || (startLine == lastLine+1 && endLine+1 < nextLine) {
+			pos = groupEnd
+			lastLine = endLine
+		}
+	}
+
+	offset := tokenFile.Offset(pos)
+	for offset < limit {
+		switch source[offset] {
+		case ' ', '\t', '\r', ';':
+			offset++
+		case '\n':
+			return tokenFile.Pos(offset + 1), true, true
+		case '/':
+			end, ok := inlineCommentEnd(source, offset, limit)
+			if !ok {
+				return token.NoPos, false, false
+			}
+			offset = end
+		default:
+			return token.NoPos, false, false
+		}
+	}
+
+	return tokenFile.Pos(offset), false, true
+}
+
+func renderHoistDeclarations(pass *analysis.Pass, file *ast.File, fnBody *ast.BlockStmt, topStmts []ast.Stmt, declarations []hoistDeclaration) (declEdit, bool) {
+	var b strings.Builder
+	if len(topStmts) == 0 {
+		for _, declaration := range declarations {
+			b.WriteString("\n\tvar ")
+			b.WriteString(declaration.name)
+			b.WriteByte(' ')
+			b.WriteString(declaration.typ)
+		}
+		b.WriteByte('\n')
+		pos := fnBody.Lbrace + 1
+		return declEdit{pos: pos, end: pos, text: b.String()}, true
+	}
+
+	pos, atLineStart, ok := hoistInsertionPosition(pass, file, fnBody, topStmts)
+	if !ok {
+		return declEdit{}, false
+	}
+
+	if !atLineStart {
+		b.WriteByte('\n')
+	}
+	for _, declaration := range declarations {
+		b.WriteString("\tvar ")
+		b.WriteString(declaration.name)
+		b.WriteByte(' ')
+		b.WriteString(declaration.typ)
+		b.WriteByte('\n')
+	}
+
+	return declEdit{pos: pos, end: pos, text: b.String()}, true
 }
 
 // accessibleHoistType avoids spelling private imported types in generated declarations.
