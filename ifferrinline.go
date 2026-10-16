@@ -21,6 +21,10 @@ func init() {
 
 type IfErrInline struct{}
 
+func NewIfErrInline(_ any) (register.LinterPlugin, error) {
+	return &IfErrInline{}, nil
+}
+
 func (p *IfErrInline) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	plan := newInlineCompilePlanAnalyzer(inlineRule{"iferrinline", checkedError})
 	return []*analysis.Analyzer{newIfErrInlineAnalyzer(plan), plan}, nil
@@ -37,10 +41,6 @@ func newIfErrInlineAnalyzer(plan *analysis.Analyzer) *analysis.Analyzer {
 
 func (p *IfErrInline) GetLoadMode() string {
 	return register.LoadModeTypesInfo
-}
-
-func NewIfErrInline(_ any) (register.LinterPlugin, error) {
-	return &IfErrInline{}, nil
 }
 
 const errorVariableName = "err"
@@ -617,6 +617,7 @@ func inlineCommentEnd(source []byte, offset, limit int) (int, bool) {
 	if offset < 0 || offset+1 >= limit || limit > len(source) || source[offset] != '/' {
 		return 0, false
 	}
+
 	switch source[offset+1] {
 	case '/':
 		newline := bytes.IndexByte(source[offset+2:limit], '\n')
@@ -629,6 +630,7 @@ func inlineCommentEnd(source []byte, offset, limit int) (int, bool) {
 			return offset + end + 4, true
 		}
 	}
+
 	return 0, false
 }
 
@@ -638,6 +640,7 @@ func inlineCommentEnd(source []byte, offset, limit int) (int, bool) {
 func hoistInsertionPosition(pass *analysis.Pass, file *ast.File, fnBody *ast.BlockStmt, topStmts []ast.Stmt) (token.Pos, bool, bool) {
 	pos := topStmts[len(topStmts)-1].End()
 	next := fnBody.Rbrace
+
 	if len(topStmts) < len(fnBody.List) {
 		next = fnBody.List[len(topStmts)].Pos()
 	}
@@ -646,6 +649,7 @@ func hoistInsertionPosition(pass *analysis.Pass, file *ast.File, fnBody *ast.Blo
 	if tokenFile == nil || pass.ReadFile == nil {
 		return token.NoPos, false, false
 	}
+
 	source, err := pass.ReadFile(tokenFile.Name())
 	if err != nil || len(source) != tokenFile.Size() || next < pos || next > tokenFile.Pos(len(source)) {
 		return token.NoPos, false, false
@@ -654,20 +658,24 @@ func hoistInsertionPosition(pass *analysis.Pass, file *ast.File, fnBody *ast.Blo
 	limit := tokenFile.Offset(next)
 	lastLine := tokenFile.Line(pos)
 	nextLine := tokenFile.Line(next)
+
 	for _, group := range file.Comments {
 		if group.Pos() < pos || group.Pos() >= next {
 			continue
 		}
+
 		var end int
 		for _, comment := range group.List {
 			var ok bool
-			end, ok = inlineCommentEnd(source, tokenFile.Offset(comment.Pos()), limit)
-			if !ok {
+
+			if end, ok = inlineCommentEnd(source, tokenFile.Offset(comment.Pos()), limit); !ok {
 				return token.NoPos, false, false
 			}
 		}
+
 		groupEnd := tokenFile.Pos(end)
 		startLine := tokenFile.Line(group.Pos())
+
 		endLine := tokenFile.Line(groupEnd)
 		if startLine == lastLine || (startLine == lastLine+1 && endLine+1 < nextLine) {
 			pos = groupEnd
@@ -687,6 +695,7 @@ func hoistInsertionPosition(pass *analysis.Pass, file *ast.File, fnBody *ast.Blo
 			if !ok {
 				return token.NoPos, false, false
 			}
+
 			offset = end
 		default:
 			return token.NoPos, false, false
@@ -697,7 +706,11 @@ func hoistInsertionPosition(pass *analysis.Pass, file *ast.File, fnBody *ast.Blo
 }
 
 func renderHoistDeclarations(pass *analysis.Pass, file *ast.File, fnBody *ast.BlockStmt, topStmts []ast.Stmt, declarations []hoistDeclaration) (declEdit, bool) {
+	var ok bool
 	var b strings.Builder
+	var pos token.Pos
+	var atLineStart bool
+
 	if len(topStmts) == 0 {
 		for _, declaration := range declarations {
 			b.WriteString("\n\tvar ")
@@ -705,19 +718,20 @@ func renderHoistDeclarations(pass *analysis.Pass, file *ast.File, fnBody *ast.Bl
 			b.WriteByte(' ')
 			b.WriteString(declaration.typ)
 		}
+
 		b.WriteByte('\n')
 		pos := fnBody.Lbrace + 1
 		return declEdit{pos: pos, end: pos, text: b.String()}, true
 	}
 
-	pos, atLineStart, ok := hoistInsertionPosition(pass, file, fnBody, topStmts)
-	if !ok {
+	if pos, atLineStart, ok = hoistInsertionPosition(pass, file, fnBody, topStmts); !ok {
 		return declEdit{}, false
 	}
 
 	if !atLineStart {
 		b.WriteByte('\n')
 	}
+
 	for _, declaration := range declarations {
 		b.WriteString("\tvar ")
 		b.WriteString(declaration.name)

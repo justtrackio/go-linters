@@ -11,6 +11,10 @@ func init() {
 
 type JustTrackPlugin struct{}
 
+func NewJustTrack(_ any) (register.LinterPlugin, error) {
+	return &JustTrackPlugin{}, nil
+}
+
 func (*JustTrackPlugin) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }
@@ -45,8 +49,4 @@ func (*JustTrackPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	analyzers = append(analyzers, newIfErrInlineAnalyzer(plan), newOkInlineAnalyzer(plan), plan)
 
 	return analyzers, nil
-}
-
-func NewJustTrack(_ any) (register.LinterPlugin, error) {
-	return &JustTrackPlugin{}, nil
 }
