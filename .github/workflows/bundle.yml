@@ -97,6 +97,7 @@ jobs:
           sha256sum ./*.tar.gz > SHA256SUMS
           gh release create "$RELEASE_VERSION" \
             --verify-tag \
+            --prerelease="${{ contains(github.ref_name, '-') }}" \
             --generate-notes \
             ./*.tar.gz \
             SHA256SUMS
