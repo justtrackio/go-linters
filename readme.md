@@ -175,12 +175,12 @@ unreachable from these entry points, such as a `planSchemaUpdate` called only
 from tests, do not prevent their callees from belonging to a production receiver
 type. This works whether or not tests are loaded.
 
-The rule conservatively skips exported functions, unused functions, function
-values passed around as callbacks, functions reached from package initializers
-or unrestricted package functions, generic functions with their own type
-parameters, and names that collide with receiver fields or methods. Generated
-declarations receive no diagnostics, but their calls still count. It analyzes
-the files selected by the current build tags and platform.
+The rule conservatively skips exported functions, unused functions, constructors, 
+function values passed around as callbacks, functions reached from package 
+initializers or unrestricted package functions, generic functions with their 
+own type parameters, and names that collide with receiver fields or methods. 
+Generated declarations receive no diagnostics, but their calls still count. 
+It analyzes the files selected by the current build tags and platform.
 
 No automatic fix is offered: converting helper chains requires adding receivers
 and updating calls, including tests, while choosing pointer or value receivers.
@@ -294,8 +294,9 @@ compile the affected production and test packages before committing them.
 
 Keeps receiver types and their methods in the same file. Within that file, the
 first method must follow the type declaration with only constructors in between.
-A constructor is any package function whose first result is the receiver type
-or a pointer to it, regardless of the function's name or additional results.
+A constructor is a package function named with a `New`, `Provide`, `Create`, or
+`Build` prefix, exported or unexported, whose first result is the receiver type
+or a pointer to it, alone or alongside a final error.
 Constructors in the type's file must appear before its first method.
 
 ```go

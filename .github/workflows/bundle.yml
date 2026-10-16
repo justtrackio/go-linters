@@ -49,6 +49,9 @@ jobs:
       - name: Test native bundle
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: mise run test-bundle
+      - name: Self-lint with local bundle
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: ./bin/golangci-lint run --build-tags integration,fixtures --max-issues-per-linter=0 --max-same-issues=0 --uniq-by-line=false ./...
       - name: Package target
         shell: bash
         env:

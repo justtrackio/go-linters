@@ -16,6 +16,10 @@ func init() {
 // MultilineBlockPlugin separates multiline statement groups from control blocks.
 type MultilineBlockPlugin struct{}
 
+func NewMultilineBlock(_ any) (register.LinterPlugin, error) {
+	return &MultilineBlockPlugin{}, nil
+}
+
 func (p *MultilineBlockPlugin) GetLoadMode() string {
 	return register.LoadModeSyntax
 }
@@ -26,10 +30,6 @@ func (p *MultilineBlockPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		Doc:  "requires blank lines after blocks and before control blocks following multiline statement groups",
 		Run:  runMultilineBlock,
 	}}, nil
-}
-
-func NewMultilineBlock(_ any) (register.LinterPlugin, error) {
-	return &MultilineBlockPlugin{}, nil
 }
 
 func runMultilineBlock(pass *analysis.Pass) (any, error) {

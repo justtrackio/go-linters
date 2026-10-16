@@ -15,6 +15,10 @@ func init() {
 // NoAnonStructPlugin requires names for non-empty struct types outside tests.
 type NoAnonStructPlugin struct{}
 
+func NewNoAnonStruct(_ any) (register.LinterPlugin, error) {
+	return &NoAnonStructPlugin{}, nil
+}
+
 func (p *NoAnonStructPlugin) GetLoadMode() string {
 	return register.LoadModeSyntax
 }
@@ -25,10 +29,6 @@ func (p *NoAnonStructPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		Doc:  "reports non-empty anonymous structs outside test files",
 		Run:  runNoAnonStruct,
 	}}, nil
-}
-
-func NewNoAnonStruct(_ any) (register.LinterPlugin, error) {
-	return &NoAnonStructPlugin{}, nil
 }
 
 func runNoAnonStruct(pass *analysis.Pass) (any, error) {
