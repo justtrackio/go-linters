@@ -3,6 +3,7 @@ package linters
 import (
 	"go/ast"
 	"go/token"
+	"go/types"
 	"path/filepath"
 	"strings"
 
@@ -18,7 +19,7 @@ func init() {
 type MethodFileCheckPlugin struct{}
 
 func (p *MethodFileCheckPlugin) GetLoadMode() string {
-	return register.LoadModeSyntax
+	return register.LoadModeTypesInfo
 }
 
 func (p *MethodFileCheckPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
@@ -39,7 +40,8 @@ type methodFileType struct {
 }
 
 func runMethodFileCheck(pass *analysis.Pass) (any, error) {
-	types := make(map[string]methodFileType)
+	locations := make(map[string]methodFileType)
+	named := make(map[string]*types.Named)
 	guarded := make(map[*ast.File]bool)
 
 	for _, file := range pass.Files {
@@ -55,9 +57,19 @@ func runMethodFileCheck(pass *analysis.Pass) (any, error) {
 			}
 
 			for _, spec := range group.Specs {
-				name := spec.(*ast.TypeSpec).Name.Name
-				if _, exists := types[name]; !exists {
-					types[name] = methodFileType{file: file, index: index}
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+
+				name := typeSpec.Name.Name
+				if _, exists := locations[name]; !exists {
+					locations[name] = methodFileType{file: file, index: index}
+					if typeName, ok := pass.TypesInfo.Defs[typeSpec.Name].(*types.TypeName); ok {
+						if n, ok := typeName.Type().(*types.Named); ok {
+							named[name] = n.Origin()
+						}
+					}
 				}
 			}
 		}
@@ -68,13 +80,13 @@ func runMethodFileCheck(pass *analysis.Pass) (any, error) {
 			continue
 		}
 
-		checkMethodFile(pass, file, types, guarded)
+		checkMethodFile(pass, file, locations, named, guarded)
 	}
 
 	return nil, nil
 }
 
-func checkMethodFile(pass *analysis.Pass, file *ast.File, types map[string]methodFileType, guarded map[*ast.File]bool) {
+func checkMethodFile(pass *analysis.Pass, file *ast.File, locations map[string]methodFileType, named map[string]*types.Named, guarded map[*ast.File]bool) {
 	first := make(map[string]*ast.FuncDecl)
 	previousReceiver := ""
 
@@ -89,10 +101,10 @@ func checkMethodFile(pass *analysis.Pass, file *ast.File, types map[string]metho
 			continue
 		}
 
-		typ, known := types[receiver]
+		typ, known := locations[receiver]
 		if first[receiver] == nil {
 			first[receiver] = fn
-			if known && typ.file == file && (index < typ.index || !methodFileOnlyConstructors(file.Decls[typ.index+1:index], receiver)) {
+			if known && typ.file == file && (index < typ.index || !methodFileOnlyConstructors(pass, file.Decls[typ.index+1:index], named[receiver])) {
 				pass.Reportf(fn.Pos(), "method %s.%s: keep the receiver type, its constructors, and its first method together", receiver, fn.Name.Name)
 			}
 		} else if receiver != previousReceiver {
@@ -108,31 +120,36 @@ func checkMethodFile(pass *analysis.Pass, file *ast.File, types map[string]metho
 		previousReceiver = receiver
 	}
 
-	checkMethodFileConstructors(pass, file, types, first)
+	checkMethodFileConstructors(pass, file, locations, named, first)
 }
 
-func checkMethodFileConstructors(pass *analysis.Pass, file *ast.File, types map[string]methodFileType, first map[string]*ast.FuncDecl) {
+func checkMethodFileConstructors(pass *analysis.Pass, file *ast.File, locations map[string]methodFileType, named map[string]*types.Named, first map[string]*ast.FuncDecl) {
 	for _, decl := range file.Decls {
-		var fn *ast.FuncDecl
-		if candidate, ok := decl.(*ast.FuncDecl); ok {
-			fn = candidate
-		} else {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil {
 			continue
 		}
 
-		receiver := methodFileConstructedType(fn)
-		typ, known := types[receiver]
+		for name, recv := range named {
+			typ, known := locations[name]
+			method := first[name]
+			if !known || typ.file != file || method == nil || fn.Pos() <= method.Pos() || !methodFileConstructsFor(pass, fn, recv) {
+				continue
+			}
 
-		if method := first[receiver]; known && typ.file == file && method != nil && fn.Pos() > method.Pos() {
-			pass.Reportf(fn.Pos(), "constructor %s for %s: must be declared before %s methods", fn.Name.Name, receiver, receiver)
+			pass.Reportf(fn.Pos(), "constructor %s for %s: must be declared before %s methods", fn.Name.Name, name, name)
 		}
 	}
 }
 
-func methodFileOnlyConstructors(decls []ast.Decl, receiver string) bool {
+func methodFileOnlyConstructors(pass *analysis.Pass, decls []ast.Decl, recv *types.Named) bool {
+	if recv == nil {
+		return true
+	}
+
 	for _, decl := range decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || methodFileConstructedType(fn) != receiver {
+		if !ok || !methodFileConstructsFor(pass, fn, recv) {
 			return false
 		}
 	}
@@ -140,14 +157,35 @@ func methodFileOnlyConstructors(decls []ast.Decl, receiver string) bool {
 	return true
 }
 
-// A constructor is any free function whose first result is T or *T,
-// regardless of its name or the number of additional results.
-func methodFileConstructedType(fn *ast.FuncDecl) string {
-	if fn.Recv != nil || fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
-		return ""
+// A constructor returns the receiver type, or an interface it implements, as
+// its first result, alone or alongside a final error.
+func methodFileConstructsFor(pass *analysis.Pass, fn *ast.FuncDecl, recv *types.Named) bool {
+	if fn.Recv != nil {
+		return false
 	}
 
-	return methodFileTypeName(fn.Type.Results.List[0].Type)
+	obj, ok := pass.TypesInfo.Defs[fn.Name].(*types.Func)
+	if !ok {
+		return false
+	}
+
+	named := constructorResult(obj)
+	if named == nil {
+		return false
+	}
+
+	if named.Origin() == recv.Origin() {
+		return true
+	}
+
+	// Universe interfaces such as error are implemented by every type, so they
+	// do not identify a constructed type.
+	iface, ok := named.Underlying().(*types.Interface)
+	if !ok || named.Obj().Pkg() == nil {
+		return false
+	}
+
+	return types.Implements(recv, iface) || types.Implements(types.NewPointer(recv), iface)
 }
 
 func methodFileTypeName(expr ast.Expr) string {

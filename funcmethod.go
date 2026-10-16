@@ -33,11 +33,12 @@ func NewFuncMethod(_ any) (register.LinterPlugin, error) {
 }
 
 type methodOwnership struct {
-	decl      *ast.FuncDecl
-	generated bool
-	owners    map[*types.Named]bool
-	callees   map[*methodOwnership]bool
-	blocked   bool
+	decl       *ast.FuncDecl
+	generated  bool
+	owners     map[*types.Named]bool
+	callees    map[*methodOwnership]bool
+	blocked    bool
+	constructs bool
 }
 
 func runFuncMethod(pass *analysis.Pass) (any, error) {
@@ -93,6 +94,9 @@ func initializeMethodOwnership(pass *analysis.Pass, obj *types.Func, state *meth
 	} else if obj.Exported() || state.decl.Name.Name == "init" || (state.decl.Name.Name == "main" && pass.Pkg.Name() == "main") {
 		// These are entry points whose callers cannot be inferred locally.
 		state.blocked = true
+	} else if funcMethodConstructs(pass, obj) {
+		// Constructors belong to the type they create, not to a calling receiver.
+		state.constructs = true
 	}
 }
 
@@ -184,7 +188,7 @@ func propagateMethodOwnership(ordered []*methodOwnership) {
 
 func reportMethodOwnership(pass *analysis.Pass, ordered []*methodOwnership) {
 	for _, state := range ordered {
-		if state.decl.Recv != nil || state.generated || state.blocked || len(state.owners) != 1 || state.decl.Type.TypeParams != nil {
+		if state.decl.Recv != nil || state.generated || state.blocked || state.constructs || len(state.owners) != 1 || state.decl.Type.TypeParams != nil {
 			continue
 		}
 
@@ -214,6 +218,36 @@ func funcMethodReceiver(typ types.Type) *types.Named {
 	}
 
 	return nil
+}
+
+func constructorResult(obj *types.Func) *types.Named {
+	results := obj.Type().(*types.Signature).Results()
+	if results.Len() == 0 || results.Len() > 2 {
+		return nil
+	}
+
+	errorType := types.Universe.Lookup("error").Type()
+	if results.Len() == 2 && !types.Identical(results.At(1).Type(), errorType) {
+		return nil
+	}
+
+	typ := types.Unalias(results.At(0).Type())
+	if ptr, ok := typ.(*types.Pointer); ok {
+		typ = types.Unalias(ptr.Elem())
+	}
+
+	named, ok := typ.(*types.Named)
+	if !ok {
+		return nil
+	}
+
+	return named
+}
+
+func funcMethodConstructs(pass *analysis.Pass, obj *types.Func) bool {
+	named := constructorResult(obj)
+
+	return named != nil && named.Obj().Pkg() == pass.Pkg
 }
 
 func funcMethodCallee(expr ast.Expr) *ast.Ident {
