@@ -1,6 +1,6 @@
 # go-linters
 
-Custom golangci-lint bundle containing the `constlocal`, `declfilecheck`, `funcmethod`, `intest`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `methodorder` analyzers.
+Custom golangci-lint bundle containing the `constlocal`, `declfilecheck`, `funcmethod`, `gosologger`, `intest`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `methodorder` analyzers.
 
 ## Install with mise
 
@@ -66,6 +66,7 @@ New releases can introduce lint failures on unchanged branches.
 | `constlocal` | No |
 | `declfilecheck` | No |
 | `funcmethod` | No |
+| `gosologger` | **Yes**, for literal format strings |
 | `intest` | No |
 | `iferrinline` | **Yes**, when a safe fix can be generated |
 | `methodfilecheck` | No |
@@ -670,6 +671,50 @@ linters:
         description: reports methods before their receiver type and private helpers before their sole caller in the same file
         original-url: github.com/justtrackio/go-linters
 ```
+
+## gosologger
+
+**Autofix: Yes**, for literal format strings.
+
+Requires `%w` for arguments implementing `error` in Gosoline `logger.Error`
+calls, preserving the error chain. Requires `%s` for error arguments in
+`logger.Warn`, `logger.Info`, `logger.Debug`, and `logger.Trace` calls.
+Other argument types and unrelated loggers are left alone.
+
+```diff
+-logger.Error(ctx, "could not load record: %s", err)
++logger.Error(ctx, "could not load record: %w", err)
+-logger.Warn(ctx, "retrying request: %w", err)
++logger.Warn(ctx, "retrying request: %s", err)
+```
+
+The rule uses type information to identify methods from
+`github.com/justtrackio/gosoline/pkg/log`, including versioned module paths,
+derived loggers, embedded interfaces, and method expressions. It handles
+multiple errors, explicit argument indexes, `*` width and precision, and `%%`.
+Flags, widths, and precision are preserved when replacing a verb.
+
+Constant formats are checked, but only literal formats are automatically fixed;
+shared constants and concatenations require manual changes. Dynamic formats,
+variadic slice expansions, and calls through stored method values are skipped.
+Arguments must implement `error` in their static type; errors hidden inside
+`any` are not inferred. Test files are checked, and generated files are skipped.
+
+The rule is active in `justtrack`. To enable it individually after rebuilding:
+
+```yaml
+linters:
+  enable:
+    - gosologger
+  settings:
+    custom:
+      gosologger:
+        type: module
+        description: enforces Gosoline error format directives by log level
+        original-url: github.com/justtrackio/go-linters
+```
+
+Run `golangci-lint run --fix` with the custom binary to correct literal formats.
 
 ## Develop
 

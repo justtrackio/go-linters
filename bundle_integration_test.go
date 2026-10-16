@@ -47,11 +47,10 @@ func TestBundle(t *testing.T) {
 	workspace := t.TempDir()
 	gopath := filepath.Join(workspace, "gopath")
 	sourceRoot := filepath.Join(gopath, "src")
-	fixtureCopy := filepath.Join(sourceRoot, "testlintdata")
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "home"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "tmp"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "gocache"), 0o755))
-	require.NoError(t, copyGoFixtures(fixtureRoot, fixtureCopy))
+	require.NoError(t, copyGoFixtures(filepath.Dir(fixtureRoot), sourceRoot))
 	env := bundleTestEnv(workspace, gopath)
 
 	allFixtures := runBundleCommand(t, binary, lintArgs(repoRoot, false, []string{"./testlintdata/..."}), sourceRoot, env)
