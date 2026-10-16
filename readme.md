@@ -90,8 +90,8 @@ mise run bundle
 mise run test-bundle
 ```
 
-`mise run bundle` installs `aqua:golangci/golangci-lint@2.13.1` and invokes the
-binary returned by `mise which golangci-lint --tool aqua:golangci/golangci-lint@2.13.1`.
+`mise run bundle` installs `aqua:golangci/golangci-lint@2.15.0` and invokes the
+binary returned by `mise which golangci-lint --tool aqua:golangci/golangci-lint@2.15.0`.
 The build task does not resolve its runner through PATH.
 `.custom-gcl.yml` pins the upstream version and imports this local checkout.
 The custom binary is written to `./bin/golangci-lint`.
