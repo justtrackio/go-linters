@@ -2,14 +2,14 @@
 disable_tools = ["golangci-lint"]
 
 [tools]
-go = "1.27.0"
+go = "1.27.2"
 "github:justtrackio/go-linters" = "0.4.0"
 
 [tasks.bundle]
 description = "Build the local go-linters bundle with the pinned upstream runner"
 run = '''
-mise install aqua:golangci/golangci-lint@2.13.1
-"$(mise which golangci-lint --tool aqua:golangci/golangci-lint@2.13.1)" custom
+mise install aqua:golangci/golangci-lint@2.15.0
+"$(mise which golangci-lint --tool aqua:golangci/golangci-lint@2.15.0)" custom
 '''
 
 [tasks.test]
