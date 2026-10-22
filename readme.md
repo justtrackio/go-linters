@@ -563,8 +563,8 @@ diagnostic categories within the same plugin. Unrelated loggers are left alone.
 ```
 
 The rule uses type information to identify methods from
-`github.com/justtrackio/gosoline/pkg/log`, including versioned module paths,
-derived loggers, embedded interfaces, and method expressions. It handles
+`github.com/justtrackio/gosoline/pkg/log`, including derived loggers,
+embedded interfaces, and method expressions. It handles
 multiple errors, explicit argument indexes, `*` width and precision, and `%%`.
 Flags, widths, and precision are preserved when replacing a verb.
 
