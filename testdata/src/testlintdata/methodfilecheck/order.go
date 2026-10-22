@@ -37,10 +37,10 @@ type (
 	Pair[T, U any] struct{}
 )
 
-func MakeSingle[T any]() *Single[T] { return nil }
-func (*Single[T]) First()           {}
-func (Single[T]) Second()           {}
-func (*Pair[T, U]) First()          {} // want "method Pair.First: keep the receiver type"
+func NewSingle[T any]() *Single[T] { return nil }
+func (*Single[T]) First()          {}
+func (Single[T]) Second()          {}
+func (*Pair[T, U]) First()         {} // want "method Pair.First: keep the receiver type"
 
 type Alias = Good
 

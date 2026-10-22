@@ -15,6 +15,10 @@ func init() {
 // RecvAfterTypePlugin requires methods to follow their receiver type in the same file.
 type RecvAfterTypePlugin struct{}
 
+func NewRecvAfterType(_ any) (register.LinterPlugin, error) {
+	return &RecvAfterTypePlugin{}, nil
+}
+
 func (p *RecvAfterTypePlugin) GetLoadMode() string {
 	return register.LoadModeSyntax
 }
@@ -25,10 +29,6 @@ func (p *RecvAfterTypePlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		Doc:  "reports methods declared before their receiver type in the same file",
 		Run:  runRecvAfterType,
 	}}, nil
-}
-
-func NewRecvAfterType(_ any) (register.LinterPlugin, error) {
-	return &RecvAfterTypePlugin{}, nil
 }
 
 func runRecvAfterType(pass *analysis.Pass) (any, error) {

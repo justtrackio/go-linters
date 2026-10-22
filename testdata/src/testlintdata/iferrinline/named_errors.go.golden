@@ -70,12 +70,12 @@ func NamedErrorWithCompanionInLoop(items []int) ([]int, error) {
 
 type conversionError struct{}
 
-func concreteError() *conversionError { return nil }
+func newConcreteError() *conversionError { return nil }
 
 func (*conversionError) Error() string { return "conversion failed" }
 
 func ConcreteErrorVariable() error {
-	if convErr := concreteError(); convErr != nil {
+	if convErr := newConcreteError(); convErr != nil {
 		return convErr
 	}
 	return nil

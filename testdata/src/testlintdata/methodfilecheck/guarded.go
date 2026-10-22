@@ -11,5 +11,5 @@ type GuardedLocal struct{}
 
 var guardedSeparator = 1
 
-func (GuardedLocal) First()          {}                        // want "method GuardedLocal.First: keep the receiver type"
-func MakeGuardedLocal() GuardedLocal { return GuardedLocal{} } // want "constructor MakeGuardedLocal for GuardedLocal"
+func (GuardedLocal) First()         {}                        // want "method GuardedLocal.First: keep the receiver type"
+func NewGuardedLocal() GuardedLocal { return GuardedLocal{} } // want "constructor NewGuardedLocal for GuardedLocal"
