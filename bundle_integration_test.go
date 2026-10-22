@@ -66,6 +66,8 @@ func TestBundle(t *testing.T) {
 	}
 
 	require.True(t, hasBundleIssueAt(issues, "testlintdata/noanonstruct/structs.go", 12), "expected the existing non-fixable noanonstruct diagnostic")
+	require.True(t, hasBundleIssueAt(issues, "testlintdata/gosologger/validation/types.go", 38), "expected a bundled logger format/type diagnostic")
+	require.True(t, hasBundleIssueAt(issues, "testlintdata/gosologger/validation/pointers.go", 23), "expected a bundled logger pointer diagnostic")
 
 	fix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
 	require.Equal(t, 1, fix.exitCode, "expected only withheld manual findings after --fix; stdout:\n%s\nstderr:\n%s", fix.stdout, fix.stderr)

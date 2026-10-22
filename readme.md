@@ -547,12 +547,13 @@ linters:
 
 ## gosologger
 
-**Autofix: Yes**, for literal format strings.
+**Autofix: Yes**, for error directives in literal format strings.
 
 Requires `%w` for arguments implementing `error` in Gosoline `logger.Error`
 calls, preserving the error chain. Requires `%s` for error arguments in
 `logger.Warn`, `logger.Info`, `logger.Debug`, and `logger.Trace` calls.
-Other argument types and unrelated loggers are left alone.
+Formatting, pointer arguments, and error directives have separate checks and
+diagnostic categories within the same plugin. Unrelated loggers are left alone.
 
 ```diff
 -logger.Error(ctx, "could not load record: %s", err)
@@ -567,11 +568,29 @@ derived loggers, embedded interfaces, and method expressions. It handles
 multiple errors, explicit argument indexes, `*` width and precision, and `%%`.
 Flags, widths, and precision are preserved when replacing a verb.
 
-Constant formats are checked, but only literal formats are automatically fixed;
-shared constants and concatenations require manual changes. Dynamic formats,
-variadic slice expansions, and calls through stored method values are skipped.
-Arguments must implement `error` in their static type; errors hidden inside
-`any` are not inferred. Test files are checked, and generated files are skipped.
+Format/type validation reuses Go's `printf` analyzer: for example, `%s` with
+an integer, `%d` with a string, `%w` with a non-error, and a non-integer `*`
+width or precision are reported. It also checks missing/extra arguments,
+malformed directives, indexed arguments, and generic constraints, while
+respecting `fmt.Stringer`, `error`, and `fmt.Formatter` behavior. Mismatches
+require manual fixes, since the intended value or representation is unknown.
+
+Pointer arguments are forbidden, including named pointer types, aliases,
+`unsafe.Pointer`, and type parameters whose constraints allow pointers.
+Pointer implementations of `error`, `fmt.Stringer`, or `fmt.Formatter` are
+also reported when passed with a pointer static type. `%p` is forbidden even
+for slices or maps. These findings require an explicit value or a deliberate
+conversion such as `.String()`; dereferencing is not automatically safe.
+
+Constant formats are validated, and error directives in literals can be
+automatically fixed. Shared constants and concatenations require manual changes.
+Dynamic formats cannot be validated, but pointer arguments are still checked.
+Variadic slices hide their element values; literal expansions expose pointer
+arguments, and format syntax is still validated for other expansions. Error
+directive fixes skip expansions. Calls through stored method values are skipped.
+Interfaces such as `any` or `error` can hide runtime pointer values that cannot
+be inferred from their static types. The receiver and context are excluded from
+pointer checks. Test files are checked, and generated files are skipped.
 
 The rule is active in `justtrack`. To enable it individually after rebuilding:
 
