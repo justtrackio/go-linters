@@ -47,11 +47,10 @@ func TestBundle(t *testing.T) {
 	workspace := t.TempDir()
 	gopath := filepath.Join(workspace, "gopath")
 	sourceRoot := filepath.Join(gopath, "src")
-	fixtureCopy := filepath.Join(sourceRoot, "testlintdata")
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "home"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "tmp"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "gocache"), 0o755))
-	require.NoError(t, copyGoFixtures(fixtureRoot, fixtureCopy))
+	require.NoError(t, copyGoFixtures(filepath.Dir(fixtureRoot), sourceRoot))
 	env := bundleTestEnv(workspace, gopath)
 
 	allFixtures := runBundleCommand(t, binary, lintArgs(repoRoot, false, []string{"./testlintdata/..."}), sourceRoot, env)
@@ -67,6 +66,8 @@ func TestBundle(t *testing.T) {
 	}
 
 	require.True(t, hasBundleIssueAt(issues, "testlintdata/noanonstruct/structs.go", 12), "expected the existing non-fixable noanonstruct diagnostic")
+	require.True(t, hasBundleIssueAt(issues, "testlintdata/gosologger/validation/types.go", 38), "expected a bundled logger format/type diagnostic")
+	require.True(t, hasBundleIssueAt(issues, "testlintdata/gosologger/validation/pointers.go", 23), "expected a bundled logger pointer diagnostic")
 
 	fix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
 	require.Equal(t, 1, fix.exitCode, "expected only withheld manual findings after --fix; stdout:\n%s\nstderr:\n%s", fix.stdout, fix.stderr)

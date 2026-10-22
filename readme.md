@@ -1,6 +1,6 @@
 # go-linters
 
-Custom golangci-lint bundle containing the `funcmethod`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `recvaftertype` analyzers.
+Custom golangci-lint bundle containing the `funcmethod`, `gosologger`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `recvaftertype` analyzers.
 
 ## Install with mise
 
@@ -64,6 +64,7 @@ New releases can introduce lint failures on unchanged branches.
 | Rule | Autofix support |
 | --- | --- |
 | `funcmethod` | No |
+| `gosologger` | **Yes**, for literal format strings |
 | `iferrinline` | **Yes**, when a safe fix can be generated |
 | `methodfilecheck` | No |
 | `multilineblock` | **Yes** |
@@ -543,6 +544,69 @@ linters:
         description: reports methods declared before their receiver type in the same file
         original-url: github.com/justtrackio/go-linters
 ```
+
+## gosologger
+
+**Autofix: Yes**, for error directives in literal format strings.
+
+Requires `%w` for arguments implementing `error` in Gosoline `logger.Error`
+calls, preserving the error chain. Requires `%s` for error arguments in
+`logger.Warn`, `logger.Info`, `logger.Debug`, and `logger.Trace` calls.
+Formatting, pointer arguments, and error directives have separate checks and
+diagnostic categories within the same plugin. Unrelated loggers are left alone.
+
+```diff
+-logger.Error(ctx, "could not load record: %s", err)
++logger.Error(ctx, "could not load record: %w", err)
+-logger.Warn(ctx, "retrying request: %w", err)
++logger.Warn(ctx, "retrying request: %s", err)
+```
+
+The rule uses type information to identify methods from
+`github.com/justtrackio/gosoline/pkg/log`, including derived loggers,
+embedded interfaces, and method expressions. It handles
+multiple errors, explicit argument indexes, `*` width and precision, and `%%`.
+Flags, widths, and precision are preserved when replacing a verb.
+
+Format/type validation reuses Go's `printf` analyzer: for example, `%s` with
+an integer, `%d` with a string, `%w` with a non-error, and a non-integer `*`
+width or precision are reported. It also checks missing/extra arguments,
+malformed directives, indexed arguments, and generic constraints, while
+respecting `fmt.Stringer`, `error`, and `fmt.Formatter` behavior. Mismatches
+require manual fixes, since the intended value or representation is unknown.
+
+Pointer arguments are forbidden, including named pointer types, aliases,
+`unsafe.Pointer`, and type parameters whose constraints allow pointers.
+Pointer implementations of `error`, `fmt.Stringer`, or `fmt.Formatter` are
+also reported when passed with a pointer static type. `%p` is forbidden even
+for slices or maps. These findings require an explicit value or a deliberate
+conversion such as `.String()`; dereferencing is not automatically safe.
+
+Constant formats are validated, and error directives in literals can be
+automatically fixed. Shared constants and concatenations require manual changes.
+Dynamic formats cannot be validated, but pointer arguments are still checked.
+Variadic slices hide their element values; literal expansions expose pointer
+arguments, and format syntax is still validated for other expansions. Error
+directive fixes skip expansions. Calls through stored method values are skipped.
+Interfaces such as `any` or `error` can hide runtime pointer values that cannot
+be inferred from their static types. The receiver and context are excluded from
+pointer checks. Test files are checked, and generated files are skipped.
+
+The rule is active in `justtrack`. To enable it individually after rebuilding:
+
+```yaml
+linters:
+  enable:
+    - gosologger
+  settings:
+    custom:
+      gosologger:
+        type: module
+        description: enforces Gosoline error format directives by log level
+        original-url: github.com/justtrackio/go-linters
+```
+
+Run `golangci-lint run --fix` with the custom binary to correct literal formats.
 
 ## Develop
 
