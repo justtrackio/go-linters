@@ -3,8 +3,6 @@ package linters
 import (
 	"go/ast"
 	"go/types"
-	"strconv"
-	"strings"
 
 	"github.com/golangci/plugin-module-register/register"
 	"golang.org/x/tools/go/analysis"
@@ -65,7 +63,7 @@ func identifyGosoLoggerCall(pass *analysis.Pass, expr *ast.CallExpr) (gosoLogger
 	}
 
 	selection := pass.TypesInfo.Selections[selector]
-	if selection == nil || selection.Kind() == types.FieldVal || selection.Obj().Pkg() == nil || !isGosolineLogPackage(selection.Obj().Pkg().Path()) {
+	if selection == nil || selection.Kind() == types.FieldVal || selection.Obj().Pkg() == nil || selection.Obj().Pkg().Path() != "github.com/justtrackio/gosoline/pkg/log" {
 		return gosoLoggerCall{}, false
 	}
 
@@ -86,25 +84,4 @@ func identifyGosoLoggerCall(pass *analysis.Pass, expr *ast.CallExpr) (gosoLogger
 	}
 
 	return gosoLoggerCall{expr: expr, formatIndex: formatIndex, level: selector.Sel.Name}, true
-}
-
-func isGosolineLogPackage(path string) bool {
-	var version string
-	var ok bool
-
-	const root = "github.com/justtrackio/gosoline"
-	if path == root+"/pkg/log" {
-		return true
-	}
-
-	if version, ok = strings.CutPrefix(path, root+"/v"); !ok {
-		return false
-	}
-
-	if version, ok = strings.CutSuffix(version, "/pkg/log"); !ok {
-		return false
-	}
-
-	major, err := strconv.Atoi(version)
-	return err == nil && major >= 2
 }
