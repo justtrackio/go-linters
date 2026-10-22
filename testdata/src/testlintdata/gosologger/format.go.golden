@@ -20,7 +20,6 @@ func Levels(ctx context.Context, logger glog.Logger, err error) {
 	logger.Debug(ctx, "failed: %s", err)
 	logger.Trace(ctx, "failed: %s", err)
 	logger.Error(ctx, "no error: %s %v %d", "text", 42, 7)
-	logger.Warn(ctx, "no error: %w", "text")
 	logger.Error(ctx, "no arguments")
 	logger.Error(ctx, "nil: %v", nil)
 	fmt.Printf("%s", err)
@@ -40,13 +39,6 @@ func Formats(ctx context.Context, logger glog.Logger, err error) {
 	logger.Error(ctx, "literal %%s %%w: %w", err)
 	logger.Warn(ctx, "%*s %s", 4, "text", err)
 	logger.Error(ctx, "%[2]*[1]w", err, 4)
-	logger.Error(ctx, "trailing %", err)
-	logger.Error(ctx, "%[0]v", err)
-	logger.Error(ctx, "%[x]v", err)
-	logger.Error(ctx, "%[1v", err)
-	logger.Error(ctx, "%[9]v", err)
-	logger.Error(ctx, "%[9223372036854775807]v %v %v", err)
-	logger.Error(ctx, "%s")
 }
 
 func Receivers(ctx context.Context, logger glog.GosoLogger, err error) {
@@ -68,13 +60,13 @@ func Embedded(ctx context.Context, logger WrappedLogger, err error) {
 
 type ConcreteError struct{}
 
-func (*ConcreteError) Error() string { return "error" }
+func (ConcreteError) Error() string { return "error" }
 
 func ErrorTypes[T error](ctx context.Context, logger glog.Logger, generic T) {
 	err := errors.New("error")
-	logger.Error(ctx, "%w", err)              // want "error arguments"
-	logger.Error(ctx, "%w", &ConcreteError{}) // want "error arguments"
-	logger.Warn(ctx, "%s", generic)           // want "error arguments"
+	logger.Error(ctx, "%w", err)             // want "error arguments"
+	logger.Error(ctx, "%w", ConcreteError{}) // want "error arguments"
+	logger.Warn(ctx, "%s", generic)          // want "error arguments"
 	var opaque any = err
 	logger.Error(ctx, "%v", opaque)
 }

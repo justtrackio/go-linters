@@ -15,5 +15,13 @@ func TestGosoLogger(t *testing.T) {
 	require.NoError(t, err)
 	analyzers, err := plugin.BuildAnalyzers()
 	require.NoError(t, err)
-	analysistest.RunWithSuggestedFixes(t, testdataDir(t), analyzers[0], "testlintdata/gosologger/...")
+	analysistest.RunWithSuggestedFixes(t, testdataDir(t), analyzers[0], "testlintdata/gosologger", "testlintdata/gosologger/constants")
+}
+
+func TestGosoLoggerValidation(t *testing.T) {
+	plugin, err := NewGosoLogger(nil)
+	require.NoError(t, err)
+	analyzers, err := plugin.BuildAnalyzers()
+	require.NoError(t, err)
+	analysistest.Run(t, testdataDir(t), analyzers[0], "testlintdata/gosologger/validation")
 }
