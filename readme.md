@@ -1,6 +1,6 @@
 # go-linters
 
-Custom golangci-lint bundle containing the `funcmethod`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `recvaftertype` analyzers.
+Custom golangci-lint bundle containing the `constlocal`, `declfilecheck`, `funcmethod`, `intest`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `methodorder` analyzers.
 
 ## Install with mise
 
@@ -63,13 +63,16 @@ New releases can introduce lint failures on unchanged branches.
 
 | Rule | Autofix support |
 | --- | --- |
+| `constlocal` | No |
+| `declfilecheck` | No |
 | `funcmethod` | No |
+| `intest` | No |
 | `iferrinline` | **Yes**, when a safe fix can be generated |
 | `methodfilecheck` | No |
 | `multilineblock` | **Yes** |
 | `noanonstruct` | No |
 | `okinline` | **Yes**, when a safe fix can be generated |
-| `recvaftertype` | No |
+| `methodorder` | No |
 
 Apply supported fixes by running the custom binary with `--fix`:
 
@@ -200,6 +203,40 @@ linters:
         original-url: github.com/justtrackio/go-linters
 ```
 
+## intest
+
+**Autofix: No.**
+
+Reports private package functions declared in production files that are reachable
+from tests but not from production entry points. For example, a
+`missingImageReferences` helper called only in `_test.go` should either move into
+a test file or be removed with its obsolete test.
+
+References include calls and function values, generic instantiations, and helper
+chains across files, including recursive groups. Production entry points include
+exported functions, methods, `init`, `main`, package initializers, and generated
+code. Generated declarations, exported functions, methods, test declarations,
+and completely unused functions receive no diagnostics. Exported functions and
+methods are skipped because their callers cannot be inferred reliably within a
+single package. Use `unused` for completely unused code.
+
+Keep `run.tests: true` (the golangci-lint default). Without loaded tests, this rule
+cannot identify test usage. Only files selected by the current build tags and
+platform participate in the analysis. The aggregate `justtrack` plugin includes
+this rule; for selective use, enable `intest`:
+
+```yaml
+linters:
+  enable:
+    - intest
+  settings:
+    custom:
+      intest:
+        type: module
+        description: reports private production functions used only by tests
+        original-url: github.com/justtrackio/go-linters
+```
+
 ## iferrinline
 
 **Autofix: Yes**, when a safe fix can be generated (see [Autofix](#autofix)).
@@ -287,6 +324,86 @@ aggregate and standalone plugins cannot reuse the other selection's fixes.
 
 This check covers compilation, not semantic equivalence. Review the changes and
 compile the affected production and test packages before committing them.
+
+## constlocal
+
+Reports a private package-level constant when all its references are inside one function or method.
+The number of references does not matter. Nested closures belong to their enclosing function.
+References are checked across files in the analyzed package variant. Uses outside function bodies prevent a report.
+Test references count when test files are included in that variant; a production-only variant cannot see them.
+
+Move the constant into its owning function. If it has one reference, use its value directly instead:
+
+```go
+// Before
+const query = `SELECT name FROM views`
+
+func List() string {
+    return query
+}
+
+// After
+func List() string {
+    return `SELECT name FROM views`
+}
+```
+
+Local constants with exactly one reference are also reported: inline their value at that reference.
+An exception applies when the initializer spans several source lines and the reference is in a call argument.
+Keep these constants local so multiline SQL does not interrupt the call's argument list.
+This includes raw strings combined with quoted string fragments. Single-line strings containing `\n` still qualify for inlining.
+Local constants used several times remain valid, including references from nested closures.
+
+Exported package constants, explicitly typed constants, unused constants, generated declarations,
+and declarations in build-constrained files are skipped. Blocks with `iota` or implicit values are skipped.
+A reference from generated code prevents a report. No automatic fix is offered.
+
+The `justtrack` bundle includes this rule. To enable it individually, configure `constlocal` as a module plugin.
+
+## declfilecheck
+
+Reports unexported package types, constants, and variables whose production users
+belong to exactly one other file. Move the declaration to the reported file.
+Ownership follows references through other private declarations, including
+recursive type groups, so a helper type used by another helper type inherits its
+ultimate users. References within the declaration itself do not establish ownership.
+Unused declarations are left to `unused`.
+
+A file containing a type used by at least two other production files is treated
+as a package type collection: no declarations in that file are reported.
+Both exported and unexported types establish a collection, and ownership follows
+type dependencies. The exemption uses references, not the filename. Uses in the
+declaration's own file and in tests do not establish a shared collection.
+
+Test references do not establish production ownership. Exported declarations and
+functions establish ownership in their own file; methods do too, preserving the
+receiver placement enforced by `methodfilecheck`. Independent constant specs are
+checked separately. Constant blocks containing implicit expressions or the built-in
+`iota` are considered as a unit to preserve their positional semantics. Multi-name
+constant and variable specs also stay together. Units containing exported names
+or blank identifiers are skipped.
+
+Generated files, files with build directives, and platform-specific filenames
+are not move candidates or destinations. Their references still establish ownership
+and prevent a shared declaration from being moved elsewhere. Only files selected
+by the current build tags and platform participate in the analysis.
+
+This rule is separate from `methodfilecheck`, which checks receiver placement and
+method ordering. It offers no autofix: moving declarations can require import
+changes, and moving variable initializers can affect initialization order.
+The aggregate `justtrack` plugin enables it automatically. For selective use:
+
+```yaml
+linters:
+  enable:
+    - declfilecheck
+  settings:
+    custom:
+      declfilecheck:
+        type: module
+        description: reports private types, constants, and variables owned by one other production file
+        original-url: github.com/justtrackio/go-linters
+```
 
 ## methodfilecheck
 
@@ -510,7 +627,7 @@ linters:
         original-url: github.com/justtrackio/go-linters
 ```
 
-## recvaftertype
+## methodorder
 
 **Autofix: No.**
 
@@ -520,6 +637,16 @@ as a style convention. Pointer, value, and generic receivers are checked,
 including types in grouped declarations and receiver aliases. Methods whose
 receiver type is declared in another file are allowed. Test files are checked;
 generated files are skipped.
+
+Unexported functions and methods used exclusively by one other function or method
+must also appear after
+that caller when both are in the same file. References are resolved across the
+package, including method values and method expressions. References from test
+files are ignored for production functions and methods, so unit tests do not hide a helper's
+sole production caller. Helpers declared in test files still count test references.
+Repeated uses by the
+same caller count once; self-recursion is ignored. Shared helpers, unused functions and methods,
+package-level references, and recursive caller cycles are exempt.
 
 ```go
 func (s *QueueService[T, F]) PurgeJobs() {} // reported
@@ -535,12 +662,12 @@ Enable it after rebuilding the custom binary with `golangci-lint custom -v`:
 ```yaml
 linters:
   enable:
-    - recvaftertype
+    - methodorder
   settings:
     custom:
-      recvaftertype:
+      methodorder:
         type: module
-        description: reports methods declared before their receiver type in the same file
+        description: reports methods before their receiver type and private helpers before their sole caller in the same file
         original-url: github.com/justtrackio/go-linters
 ```
 

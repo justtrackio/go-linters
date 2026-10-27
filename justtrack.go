@@ -25,11 +25,14 @@ func (*JustTrackPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	var err error
 
 	constructors := []func(any) (register.LinterPlugin, error){
+		NewConstLocal,
 		NewNoAnonStruct,
 		NewFuncMethod,
+		NewInTest,
 		NewMethodFileCheck,
+		NewDeclFileCheck,
 		NewMultilineBlock,
-		NewRecvAfterType,
+		NewMethodOrder,
 	}
 	analyzers := make([]*analysis.Analyzer, 0, len(constructors)+2)
 

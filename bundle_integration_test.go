@@ -67,6 +67,10 @@ func TestBundle(t *testing.T) {
 	}
 
 	require.True(t, hasBundleIssueAt(issues, "testlintdata/noanonstruct/structs.go", 12), "expected the existing non-fixable noanonstruct diagnostic")
+	require.True(t, hasBundleIssueAt(issues, "testlintdata/intest/helpers.go", 3), "expected the test-only production function diagnostic")
+	require.True(t, hasBundleIssueAt(issues, "testlintdata/declfilecheck/types.go", 3), "expected the private declaration ownership diagnostic")
+	require.True(t, hasBundleIssueAt(issues, "testlintdata/constlocal/constants.go", 3), "expected the function-owned constant diagnostic")
+	require.True(t, hasBundleIssueAt(issues, "testlintdata/constlocal/local.go", 4), "expected the single-use local constant diagnostic")
 
 	fix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
 	require.Equal(t, 1, fix.exitCode, "expected only withheld manual findings after --fix; stdout:\n%s\nstderr:\n%s", fix.stdout, fix.stderr)

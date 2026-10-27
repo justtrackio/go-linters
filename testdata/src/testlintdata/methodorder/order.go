@@ -1,4 +1,4 @@
-package recvaftertype
+package methodorder
 
 func (Value) Before() {} // want "method Before must be declared after receiver type Value in the same file"
 

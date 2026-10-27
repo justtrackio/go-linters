@@ -8,14 +8,14 @@ import (
 	"golang.org/x/tools/go/analysis/analysistest"
 )
 
-func TestRecvAfterType(t *testing.T) {
-	constructor, err := register.GetPlugin("recvaftertype")
+func TestMethodOrder(t *testing.T) {
+	constructor, err := register.GetPlugin("methodorder")
 	require.NoError(t, err)
 	plugin, err := constructor(nil)
 	require.NoError(t, err)
-	require.Equal(t, register.LoadModeSyntax, plugin.GetLoadMode())
+	require.Equal(t, register.LoadModeTypesInfo, plugin.GetLoadMode())
 	analyzers, err := plugin.BuildAnalyzers()
 	require.NoError(t, err)
 	require.Len(t, analyzers, 1)
-	analysistest.Run(t, testdataDir(t), analyzers[0], "testlintdata/recvaftertype")
+	analysistest.Run(t, testdataDir(t), analyzers[0], "testlintdata/methodorder")
 }
