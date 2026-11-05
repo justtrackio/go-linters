@@ -79,8 +79,6 @@ func MultiCompanionUsedAfter() error {
 	return nil
 }
 
-func withCallback(fn func() int) (int, error) { return fn(), nil }
-
 func MultiLineCallNotFlagged() error {
 	x, err := withCallback(func() int {
 		return 42
@@ -92,9 +90,7 @@ func MultiLineCallNotFlagged() error {
 	return nil
 }
 
-func three() (string, bool, error) { return "", false, nil }
-
-func use2(string, bool) {}
+func withCallback(fn func() int) (int, error) { return fn(), nil }
 
 func ThreeReturns() error {
 	s, ok, err := three() // want "if err can be inlined by hoisting s, ok to var declarations at the top of the function and changing := to ="
@@ -104,6 +100,10 @@ func ThreeReturns() error {
 	use2(s, ok)
 	return nil
 }
+
+func use2(string, bool) {}
+
+func three() (string, bool, error) { return "", false, nil }
 
 func MultiErrReused() error {
 	x, err := bar() // want "if err can be inlined by hoisting x to var declarations at the top of the function and changing := to ="
@@ -155,8 +155,6 @@ func PackageShadow() (*holder, error) {
 	return &holder{widget: widget}, nil
 }
 
-func useService(*widget.Service) {}
-
 func ParamShadow(svc *widget.Service) error {
 	useService(svc)
 	svc, err := widget.With(svc) // want "if err can be inlined by hoisting svc to var declarations at the top of the function and changing := to ="
@@ -166,6 +164,8 @@ func ParamShadow(svc *widget.Service) error {
 	useService(svc)
 	return nil
 }
+
+func useService(*widget.Service) {}
 
 func ExistingVarBlockReorder() error {
 	var x int
@@ -214,8 +214,6 @@ func AssignErrUsedAfter() error {
 	return err
 }
 
-func four() (int, bool, string, error) { return 0, false, "", nil }
-
 func AssignMultiBlankUsedAfter() error {
 	var status int
 	var err error
@@ -226,6 +224,8 @@ func AssignMultiBlankUsedAfter() error {
 	use(status)
 	return err
 }
+
+func four() (int, bool, string, error) { return 0, false, "", nil }
 
 func AssignNamedReturn() (status int, err error) {
 	status, err = bar() // want "if err can be inlined into the assignment"

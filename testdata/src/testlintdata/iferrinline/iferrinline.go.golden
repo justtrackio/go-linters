@@ -78,8 +78,6 @@ func MultiCompanionUsedAfter() error {
 	return nil
 }
 
-func withCallback(fn func() int) (int, error) { return fn(), nil }
-
 func MultiLineCallNotFlagged() error {
 	x, err := withCallback(func() int {
 		return 42
@@ -91,9 +89,7 @@ func MultiLineCallNotFlagged() error {
 	return nil
 }
 
-func three() (string, bool, error) { return "", false, nil }
-
-func use2(string, bool) {}
+func withCallback(fn func() int) (int, error) { return fn(), nil }
 
 func ThreeReturns() error {
 	var ok bool
@@ -107,6 +103,10 @@ func ThreeReturns() error {
 	use2(s, ok)
 	return nil
 }
+
+func use2(string, bool) {}
+
+func three() (string, bool, error) { return "", false, nil }
 
 func MultiErrReused() error {
 	var err error
@@ -169,8 +169,6 @@ func PackageShadow() (*holder, error) {
 	return &holder{widget: service}, nil
 }
 
-func useService(*widget.Service) {}
-
 func ParamShadow(svc *widget.Service) error {
 	var err error
 
@@ -182,6 +180,8 @@ func ParamShadow(svc *widget.Service) error {
 	useService(svc)
 	return nil
 }
+
+func useService(*widget.Service) {}
 
 func ExistingVarBlockReorder() error {
 	var x int
@@ -234,8 +234,6 @@ func AssignErrUsedAfter() error {
 	return err
 }
 
-func four() (int, bool, string, error) { return 0, false, "", nil }
-
 func AssignMultiBlankUsedAfter() error {
 	var status int
 	var err error
@@ -245,6 +243,8 @@ func AssignMultiBlankUsedAfter() error {
 	use(status)
 	return err
 }
+
+func four() (int, bool, string, error) { return 0, false, "", nil }
 
 func AssignNamedReturn() (status int, err error) {
 	if status, err = bar(); err != nil {

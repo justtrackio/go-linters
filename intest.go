@@ -16,6 +16,10 @@ func init() {
 // InTestPlugin finds private production functions reachable only from tests.
 type InTestPlugin struct{}
 
+func NewInTest(_ any) (register.LinterPlugin, error) {
+	return &InTestPlugin{}, nil
+}
+
 func (*InTestPlugin) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }
@@ -26,10 +30,6 @@ func (*InTestPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		Doc:  "reports private production functions used only by tests",
 		Run:  runInTest,
 	}}, nil
-}
-
-func NewInTest(_ any) (register.LinterPlugin, error) {
-	return &InTestPlugin{}, nil
 }
 
 type inTestFunction struct {

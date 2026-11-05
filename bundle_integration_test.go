@@ -90,7 +90,7 @@ func TestBundleSelectiveInlineRules(t *testing.T) {
 	binary := os.Getenv("GOLANGCI_LINT_BINARY")
 	require.NotEmpty(t, binary)
 	require.True(t, filepath.IsAbs(binary))
-	fixtures := append(selectiveInlineFixtures(), struct{ name, source string }{"import-alias-collision", selectiveInlineImportSource})
+	fixtures := append(selectiveInlineFixtures(), struct{ name, source string }{"import-alias-collision", selectiveInlineImportSource()})
 
 	for _, fixture := range fixtures {
 		for _, selection := range [][]string{{"iferrinline"}, {"okinline"}, {"iferrinline", "okinline"}, {"okinline", "iferrinline"}, {"justtrack"}} {
@@ -148,7 +148,7 @@ func TestBundleInlineSelectionCacheIsolation(t *testing.T) {
 	binary := os.Getenv("GOLANGCI_LINT_BINARY")
 	require.NotEmpty(t, binary)
 	require.True(t, filepath.IsAbs(binary))
-	standalone := []string{"noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "recvaftertype"}
+	standalone := []string{"noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "methodorder"}
 
 	for _, direction := range []struct {
 		name         string
@@ -158,7 +158,7 @@ func TestBundleInlineSelectionCacheIsolation(t *testing.T) {
 		{"standalone-to-aggregate", standalone, []string{"justtrack"}},
 	} {
 		t.Run(direction.name, func(t *testing.T) {
-			workspace, sourceRoot, filename, env := inlineBundleWorkspace(t, selectiveInlineSiblingSource)
+			workspace, sourceRoot, filename, env := inlineBundleWorkspace(t, selectiveInlineSiblingSource())
 			config := writeInlineBundleConfig(t, workspace, direction.warm)
 			warm := runBundleCommand(t, binary, inlineBundleArgs(config, false), sourceRoot, env)
 			require.Equal(t, 1, warm.exitCode, "stdout:\n%s\nstderr:\n%s", warm.stdout, warm.stderr)
@@ -186,7 +186,7 @@ func TestBundleInlineSelectionCacheIsolation(t *testing.T) {
 			require.NoError(t, err)
 
 			if aggregate {
-				require.Equal(t, selectiveInlineSiblingSource, string(contents))
+				require.Equal(t, selectiveInlineSiblingSource(), string(contents))
 			}
 
 			assertInlineBundleInitializers(t, contents, !aggregate, !aggregate)
@@ -219,7 +219,7 @@ func writeInlineBundleConfig(t *testing.T, workspace string, selection []string)
 	}
 
 	config += "  settings:\n    custom:\n"
-	for _, plugin := range []string{"justtrack", "noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "recvaftertype"} {
+	for _, plugin := range []string{"justtrack", "noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "methodorder"} {
 		config += "      " + plugin + ":\n        type: module\n        description: inline regression\n        original-url: github.com/justtrackio/go-linters\n"
 	}
 

@@ -220,18 +220,6 @@ func funcMethodReceiver(typ types.Type) *types.Named {
 	return nil
 }
 
-// isConstructorName reports whether name starts with a constructor prefix
-// followed by the constructed type name, exported or unexported.
-func isConstructorName(name string) bool {
-	for _, prefix := range [...]string{"New", "Provide", "Create", "Build", "new", "provide", "create", "build"} {
-		if rest, ok := strings.CutPrefix(name, prefix); ok {
-			return rest != "" && rest[0] >= 'A' && rest[0] <= 'Z'
-		}
-	}
-
-	return false
-}
-
 func constructorResult(obj *types.Func) *types.Named {
 	var ok bool
 	var named *types.Named
@@ -260,6 +248,18 @@ func constructorResult(obj *types.Func) *types.Named {
 	}
 
 	return named
+}
+
+// isConstructorName reports whether name starts with a constructor prefix
+// followed by the constructed type name, exported or unexported.
+func isConstructorName(name string) bool {
+	for _, prefix := range [...]string{"New", "Provide", "Create", "Build", "new", "provide", "create", "build"} {
+		if rest, ok := strings.CutPrefix(name, prefix); ok {
+			return rest != "" && rest[0] >= 'A' && rest[0] <= 'Z'
+		}
+	}
+
+	return false
 }
 
 func funcMethodConstructs(pass *analysis.Pass, obj *types.Func) bool {

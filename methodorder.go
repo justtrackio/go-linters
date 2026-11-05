@@ -17,6 +17,10 @@ func init() {
 // MethodOrderPlugin orders receiver types, callers, and private helpers.
 type MethodOrderPlugin struct{}
 
+func NewMethodOrder(_ any) (register.LinterPlugin, error) {
+	return &MethodOrderPlugin{}, nil
+}
+
 func (p *MethodOrderPlugin) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }
@@ -27,10 +31,6 @@ func (p *MethodOrderPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		Doc:  "reports methods before their receiver type and private helpers before their sole caller in the same file",
 		Run:  runMethodOrder,
 	}}, nil
-}
-
-func NewMethodOrder(_ any) (register.LinterPlugin, error) {
-	return &MethodOrderPlugin{}, nil
 }
 
 func runMethodOrder(pass *analysis.Pass) (any, error) {

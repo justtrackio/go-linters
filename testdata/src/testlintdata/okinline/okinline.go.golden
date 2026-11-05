@@ -148,8 +148,6 @@ func Nested() {
 	}
 }
 
-func widgetOK() (*widget.Service, bool) { return nil, true }
-
 func PackageShadow() *widget.Service {
 	var ok bool
 	var service *widget.Service
@@ -161,6 +159,8 @@ func PackageShadow() *widget.Service {
 
 	return service
 }
+
+func widgetOK() (*widget.Service, bool) { return nil, true }
 
 func AlreadyInline() {
 	if event, ok := normalize(); !ok {

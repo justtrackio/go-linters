@@ -4,8 +4,6 @@ import "errors"
 
 type status struct{ Exists *bool }
 
-func inspect() (status, int, int, error) { return status{}, 0, 0, nil }
-
 func checked(flag bool) {
 	cat := errors.New("access denied")
 	service := cat.Error()
@@ -68,3 +66,5 @@ func checked(flag bool) {
 		_ = service
 	}
 }
+
+func inspect() (status, int, int, error) { return status{}, 0, 0, nil }

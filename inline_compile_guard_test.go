@@ -141,10 +141,16 @@ func buildInlineCompilePlan(pass *analysis.Pass) (any, error) {
 	return newInlineCompilePlanAnalyzer(inlineRule{"iferrinline", checkedError}, inlineRule{"okinline", checkedOk}).Run(pass)
 }
 
-const selectiveInlineSource = `package fixture
+func selectiveInlineFixtures() []struct{ name, source string } {
+	return []struct{ name, source string }{
+		{"distinct", selectiveInlineSource()},
+		{"sibling-collision", selectiveInlineSiblingSource()},
+	}
+}
 
-func pair() (int, error) { return 1, nil }
-func lookup() (int, bool) { return 1, true }
+func selectiveInlineSource() string {
+	return `package fixture
+
 func conflict() {
 	value, err := pair()
 	if err != nil {
@@ -160,12 +166,15 @@ func conflict() {
 
 	_ = other
 }
-`
-
-const selectiveInlineSiblingSource = `package fixture
 
 func pair() (int, error) { return 1, nil }
 func lookup() (int, bool) { return 1, true }
+`
+}
+
+func selectiveInlineSiblingSource() string {
+	return `package fixture
+
 func conflict() {
 	{
 		value, err := pair()
@@ -185,65 +194,10 @@ func conflict() {
 		_ = value
 	}
 }
+
+func pair() (int, error) { return 1, nil }
+func lookup() (int, bool) { return 1, true }
 `
-
-const selectiveInlineImportSource = `package fixture
-
-import (
-	a "example.com/importcollision/a/provider" // Preserve the first group's comment.
-
-	// Preserve the second group's leading comment.
-	b "example.com/importcollision/b/provider"
-)
-
-func errorCase() {
-	value, err := a.Pair()
-	if err != nil {
-		return
-	}
-
-	_ = value
-}
-
-func booleanCase() {
-	value, ok := b.Lookup()
-	if !ok {
-		return
-	}
-
-	_ = value
-}
-`
-
-func writeInlineSharedImportDependencies(t *testing.T, sourceRoot string) {
-	t.Helper()
-	for path, source := range map[string]string{
-		"example.com/importcollision/a/shared/value.go": "package shared\n\ntype Value struct{}\n",
-		"example.com/importcollision/b/shared/value.go": "package shared\n\ntype Value struct{}\n",
-		"example.com/importcollision/a/provider/provider.go": `package provider
-
-import "example.com/importcollision/a/shared"
-
-func Pair() (shared.Value, error) { return shared.Value{}, nil }
-`,
-		"example.com/importcollision/b/provider/provider.go": `package provider
-
-import "example.com/importcollision/b/shared"
-
-func Lookup() (shared.Value, bool) { return shared.Value{}, true }
-`,
-	} {
-		filename := filepath.Join(sourceRoot, filepath.FromSlash(path))
-		require.NoError(t, os.MkdirAll(filepath.Dir(filename), 0o755))
-		require.NoError(t, os.WriteFile(filename, []byte(source), 0o644))
-	}
-}
-
-func selectiveInlineFixtures() []struct{ name, source string } {
-	return []struct{ name, source string }{
-		{"distinct", selectiveInlineSource},
-		{"sibling-collision", selectiveInlineSiblingSource},
-	}
 }
 
 func runInlineTestAnalyzer(t *testing.T, pass *analysis.Pass, analyzer *analysis.Analyzer) []analysis.Diagnostic {
@@ -541,7 +495,7 @@ func TestStandaloneInlineSharedImportOwnersPreserveOriginalBytes(t *testing.T) {
 	sourceRoot := filepath.Join(gopath, "src")
 	filename := filepath.Join(sourceRoot, "fixture", "fixture.go")
 	require.NoError(t, os.MkdirAll(filepath.Dir(filename), 0o755))
-	require.NoError(t, os.WriteFile(filename, []byte(selectiveInlineImportSource), 0o644))
+	require.NoError(t, os.WriteFile(filename, []byte(selectiveInlineImportSource()), 0o644))
 	writeInlineSharedImportDependencies(t, sourceRoot)
 	loaded, err := packages.Load(&packages.Config{
 		Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedTypesSizes | packages.NeedSyntax | packages.NeedImports | packages.NeedDeps,
@@ -566,6 +520,60 @@ func TestStandaloneInlineSharedImportOwnersPreserveOriginalBytes(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, checker.check(diagnostics[0].SuggestedFixes[0].TextEdits))
 		})
+	}
+}
+
+func selectiveInlineImportSource() string {
+	return `package fixture
+
+import (
+	a "example.com/importcollision/a/provider" // Preserve the first group's comment.
+
+	// Preserve the second group's leading comment.
+	b "example.com/importcollision/b/provider"
+)
+
+func errorCase() {
+	value, err := a.Pair()
+	if err != nil {
+		return
+	}
+
+	_ = value
+}
+
+func booleanCase() {
+	value, ok := b.Lookup()
+	if !ok {
+		return
+	}
+
+	_ = value
+}
+`
+}
+
+func writeInlineSharedImportDependencies(t *testing.T, sourceRoot string) {
+	t.Helper()
+	for path, source := range map[string]string{
+		"example.com/importcollision/a/shared/value.go": "package shared\n\ntype Value struct{}\n",
+		"example.com/importcollision/b/shared/value.go": "package shared\n\ntype Value struct{}\n",
+		"example.com/importcollision/a/provider/provider.go": `package provider
+
+import "example.com/importcollision/a/shared"
+
+func Pair() (shared.Value, error) { return shared.Value{}, nil }
+`,
+		"example.com/importcollision/b/provider/provider.go": `package provider
+
+import "example.com/importcollision/b/shared"
+
+func Lookup() (shared.Value, bool) { return shared.Value{}, true }
+`,
+	} {
+		filename := filepath.Join(sourceRoot, filepath.FromSlash(path))
+		require.NoError(t, os.MkdirAll(filepath.Dir(filename), 0o755))
+		require.NoError(t, os.WriteFile(filename, []byte(source), 0o644))
 	}
 }
 
