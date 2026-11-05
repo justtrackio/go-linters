@@ -47,11 +47,10 @@ func TestBundle(t *testing.T) {
 	workspace := t.TempDir()
 	gopath := filepath.Join(workspace, "gopath")
 	sourceRoot := filepath.Join(gopath, "src")
-	fixtureCopy := filepath.Join(sourceRoot, "testlintdata")
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "home"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "tmp"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "gocache"), 0o755))
-	require.NoError(t, copyGoFixtures(fixtureRoot, fixtureCopy))
+	require.NoError(t, copyGoFixtures(filepath.Dir(fixtureRoot), sourceRoot))
 	env := bundleTestEnv(workspace, gopath)
 
 	allFixtures := runBundleCommand(t, binary, lintArgs(repoRoot, false, []string{"./testlintdata/..."}), sourceRoot, env)
@@ -71,6 +70,8 @@ func TestBundle(t *testing.T) {
 	require.True(t, hasBundleIssueAt(issues, "testlintdata/declfilecheck/types.go", 3), "expected the private declaration ownership diagnostic")
 	require.True(t, hasBundleIssueAt(issues, "testlintdata/constlocal/constants.go", 3), "expected the function-owned constant diagnostic")
 	require.True(t, hasBundleIssueAt(issues, "testlintdata/constlocal/local.go", 4), "expected the single-use local constant diagnostic")
+	require.True(t, hasBundleIssueAt(issues, "testlintdata/gosologger/validation/types.go", 38), "expected a bundled logger format/type diagnostic")
+	require.True(t, hasBundleIssueAt(issues, "testlintdata/gosologger/validation/pointers.go", 23), "expected a bundled logger pointer diagnostic")
 
 	fix := runBundleCommand(t, binary, lintArgs(repoRoot, true, fixablePackages), sourceRoot, env)
 	require.Equal(t, 1, fix.exitCode, "expected only withheld manual findings after --fix; stdout:\n%s\nstderr:\n%s", fix.stdout, fix.stderr)
@@ -89,7 +90,7 @@ func TestBundleSelectiveInlineRules(t *testing.T) {
 	binary := os.Getenv("GOLANGCI_LINT_BINARY")
 	require.NotEmpty(t, binary)
 	require.True(t, filepath.IsAbs(binary))
-	fixtures := append(selectiveInlineFixtures(), struct{ name, source string }{"import-alias-collision", selectiveInlineImportSource})
+	fixtures := append(selectiveInlineFixtures(), struct{ name, source string }{"import-alias-collision", selectiveInlineImportSource()})
 
 	for _, fixture := range fixtures {
 		for _, selection := range [][]string{{"iferrinline"}, {"okinline"}, {"iferrinline", "okinline"}, {"okinline", "iferrinline"}, {"justtrack"}} {
@@ -147,7 +148,7 @@ func TestBundleInlineSelectionCacheIsolation(t *testing.T) {
 	binary := os.Getenv("GOLANGCI_LINT_BINARY")
 	require.NotEmpty(t, binary)
 	require.True(t, filepath.IsAbs(binary))
-	standalone := []string{"noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "recvaftertype"}
+	standalone := []string{"noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "methodorder"}
 
 	for _, direction := range []struct {
 		name         string
@@ -157,7 +158,7 @@ func TestBundleInlineSelectionCacheIsolation(t *testing.T) {
 		{"standalone-to-aggregate", standalone, []string{"justtrack"}},
 	} {
 		t.Run(direction.name, func(t *testing.T) {
-			workspace, sourceRoot, filename, env := inlineBundleWorkspace(t, selectiveInlineSiblingSource)
+			workspace, sourceRoot, filename, env := inlineBundleWorkspace(t, selectiveInlineSiblingSource())
 			config := writeInlineBundleConfig(t, workspace, direction.warm)
 			warm := runBundleCommand(t, binary, inlineBundleArgs(config, false), sourceRoot, env)
 			require.Equal(t, 1, warm.exitCode, "stdout:\n%s\nstderr:\n%s", warm.stdout, warm.stderr)
@@ -185,7 +186,7 @@ func TestBundleInlineSelectionCacheIsolation(t *testing.T) {
 			require.NoError(t, err)
 
 			if aggregate {
-				require.Equal(t, selectiveInlineSiblingSource, string(contents))
+				require.Equal(t, selectiveInlineSiblingSource(), string(contents))
 			}
 
 			assertInlineBundleInitializers(t, contents, !aggregate, !aggregate)
@@ -218,7 +219,7 @@ func writeInlineBundleConfig(t *testing.T, workspace string, selection []string)
 	}
 
 	config += "  settings:\n    custom:\n"
-	for _, plugin := range []string{"justtrack", "noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "recvaftertype"} {
+	for _, plugin := range []string{"justtrack", "noanonstruct", "iferrinline", "funcmethod", "okinline", "methodfilecheck", "multilineblock", "methodorder"} {
 		config += "      " + plugin + ":\n        type: module\n        description: inline regression\n        original-url: github.com/justtrackio/go-linters\n"
 	}
 

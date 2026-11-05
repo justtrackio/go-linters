@@ -18,6 +18,10 @@ func init() {
 // DeclFileCheckPlugin places private declarations with their production users.
 type DeclFileCheckPlugin struct{}
 
+func NewDeclFileCheck(_ any) (register.LinterPlugin, error) {
+	return &DeclFileCheckPlugin{}, nil
+}
+
 func (*DeclFileCheckPlugin) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }
@@ -28,10 +32,6 @@ func (*DeclFileCheckPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		Doc:  "reports private types, constants, and variables owned by one other production file",
 		Run:  runDeclFileCheck,
 	}}, nil
-}
-
-func NewDeclFileCheck(_ any) (register.LinterPlugin, error) {
-	return &DeclFileCheckPlugin{}, nil
 }
 
 type fileDeclaration struct {

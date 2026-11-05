@@ -33,6 +33,7 @@ func (*JustTrackPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		NewDeclFileCheck,
 		NewMultilineBlock,
 		NewMethodOrder,
+		NewGosoLogger,
 	}
 	analyzers := make([]*analysis.Analyzer, 0, len(constructors)+2)
 

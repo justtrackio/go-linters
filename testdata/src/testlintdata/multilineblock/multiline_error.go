@@ -1,7 +1,5 @@
 package multilineblock
 
-func updateMetadata(updates []string, location string) (string, error) { return location, nil }
-
 func multilineErrorCheck() {
 	meta, err := updateMetadata([]string{
 		"snapshot",
@@ -33,3 +31,5 @@ func multilineErrorCheck() {
 
 	_ = meta
 }
+
+func updateMetadata(updates []string, location string) (string, error) { return location, nil }

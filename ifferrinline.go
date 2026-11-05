@@ -116,24 +116,6 @@ func computeInlineDeclarations(pass *analysis.Pass, file *ast.File, imports map[
 	return declEditByFn
 }
 
-func inlineCandidateMessage(c candidate) string {
-	if len(c.hoistNames) == 0 {
-		return "if " + c.checkName + " can be inlined into the assignment"
-	}
-
-	hoistDisplay := make([]string, len(c.hoistNames))
-	for i, name := range c.hoistNames {
-		if r, ok := c.renames[name]; ok {
-			hoistDisplay[i] = name + " (renamed to " + r + " to avoid shadowing)"
-		} else {
-			hoistDisplay[i] = name
-		}
-	}
-
-	return "if " + c.checkName + " can be inlined by hoisting " + strings.Join(hoistDisplay, ", ") +
-		" to var declarations at the top of the function and changing := to ="
-}
-
 func reportInlineCandidates(pass *analysis.Pass, analyzerName string, candidates []candidate, declarations map[*ast.BlockStmt]declEdit, importEdits []analysis.TextEdit) {
 	varBlockEmitted := map[*ast.BlockStmt]bool{}
 	for _, c := range candidates {
@@ -153,6 +135,24 @@ func reportInlineCandidates(pass *analysis.Pass, analyzerName string, candidates
 
 		pass.Report(diag)
 	}
+}
+
+func inlineCandidateMessage(c candidate) string {
+	if len(c.hoistNames) == 0 {
+		return "if " + c.checkName + " can be inlined into the assignment"
+	}
+
+	hoistDisplay := make([]string, len(c.hoistNames))
+	for i, name := range c.hoistNames {
+		if r, ok := c.renames[name]; ok {
+			hoistDisplay[i] = name + " (renamed to " + r + " to avoid shadowing)"
+		} else {
+			hoistDisplay[i] = name
+		}
+	}
+
+	return "if " + c.checkName + " can be inlined by hoisting " + strings.Join(hoistDisplay, ", ") +
+		" to var declarations at the top of the function and changing := to ="
 }
 
 func inlineCandidateFix(pass *analysis.Pass, c candidate, declarations map[*ast.BlockStmt]declEdit, emitted map[*ast.BlockStmt]bool) (analysis.SuggestedFix, bool) {
@@ -611,27 +611,42 @@ func hoistRenamedName(c candidate, name string) string {
 	return name
 }
 
-// inlineCommentEnd uses physical source offsets: ast.Comment.End may fall
-// inside a CRLF comment because the parser strips carriage returns from Text.
-func inlineCommentEnd(source []byte, offset, limit int) (int, bool) {
-	if offset < 0 || offset+1 >= limit || limit > len(source) || source[offset] != '/' {
-		return 0, false
+func renderHoistDeclarations(pass *analysis.Pass, file *ast.File, fnBody *ast.BlockStmt, topStmts []ast.Stmt, declarations []hoistDeclaration) (declEdit, bool) {
+	var ok bool
+	var b strings.Builder
+	var pos token.Pos
+	var atLineStart bool
+
+	if len(topStmts) == 0 {
+		for _, declaration := range declarations {
+			b.WriteString("\n\tvar ")
+			b.WriteString(declaration.name)
+			b.WriteByte(' ')
+			b.WriteString(declaration.typ)
+		}
+
+		b.WriteByte('\n')
+		pos := fnBody.Lbrace + 1
+		return declEdit{pos: pos, end: pos, text: b.String()}, true
 	}
 
-	switch source[offset+1] {
-	case '/':
-		newline := bytes.IndexByte(source[offset+2:limit], '\n')
-		if newline >= 0 {
-			return offset + newline + 2, true
-		}
-	case '*':
-		end := bytes.Index(source[offset+2:limit], []byte("*/"))
-		if end >= 0 {
-			return offset + end + 4, true
-		}
+	if pos, atLineStart, ok = hoistInsertionPosition(pass, file, fnBody, topStmts); !ok {
+		return declEdit{}, false
 	}
 
-	return 0, false
+	if !atLineStart {
+		b.WriteByte('\n')
+	}
+
+	for _, declaration := range declarations {
+		b.WriteString("\tvar ")
+		b.WriteString(declaration.name)
+		b.WriteByte(' ')
+		b.WriteString(declaration.typ)
+		b.WriteByte('\n')
+	}
+
+	return declEdit{pos: pos, end: pos, text: b.String()}, true
 }
 
 // hoistInsertionPosition leaves the original var prefix and its trailing
@@ -705,42 +720,27 @@ func hoistInsertionPosition(pass *analysis.Pass, file *ast.File, fnBody *ast.Blo
 	return tokenFile.Pos(offset), false, true
 }
 
-func renderHoistDeclarations(pass *analysis.Pass, file *ast.File, fnBody *ast.BlockStmt, topStmts []ast.Stmt, declarations []hoistDeclaration) (declEdit, bool) {
-	var ok bool
-	var b strings.Builder
-	var pos token.Pos
-	var atLineStart bool
+// inlineCommentEnd uses physical source offsets: ast.Comment.End may fall
+// inside a CRLF comment because the parser strips carriage returns from Text.
+func inlineCommentEnd(source []byte, offset, limit int) (int, bool) {
+	if offset < 0 || offset+1 >= limit || limit > len(source) || source[offset] != '/' {
+		return 0, false
+	}
 
-	if len(topStmts) == 0 {
-		for _, declaration := range declarations {
-			b.WriteString("\n\tvar ")
-			b.WriteString(declaration.name)
-			b.WriteByte(' ')
-			b.WriteString(declaration.typ)
+	switch source[offset+1] {
+	case '/':
+		newline := bytes.IndexByte(source[offset+2:limit], '\n')
+		if newline >= 0 {
+			return offset + newline + 2, true
 		}
-
-		b.WriteByte('\n')
-		pos := fnBody.Lbrace + 1
-		return declEdit{pos: pos, end: pos, text: b.String()}, true
+	case '*':
+		end := bytes.Index(source[offset+2:limit], []byte("*/"))
+		if end >= 0 {
+			return offset + end + 4, true
+		}
 	}
 
-	if pos, atLineStart, ok = hoistInsertionPosition(pass, file, fnBody, topStmts); !ok {
-		return declEdit{}, false
-	}
-
-	if !atLineStart {
-		b.WriteByte('\n')
-	}
-
-	for _, declaration := range declarations {
-		b.WriteString("\tvar ")
-		b.WriteString(declaration.name)
-		b.WriteByte(' ')
-		b.WriteString(declaration.typ)
-		b.WriteByte('\n')
-	}
-
-	return declEdit{pos: pos, end: pos, text: b.String()}, true
+	return 0, false
 }
 
 // accessibleHoistType avoids spelling private imported types in generated declarations.

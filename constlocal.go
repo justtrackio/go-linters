@@ -16,6 +16,10 @@ func init() {
 // ConstLocalPlugin keeps private constants with their sole function owner.
 type ConstLocalPlugin struct{}
 
+func NewConstLocal(_ any) (register.LinterPlugin, error) {
+	return &ConstLocalPlugin{}, nil
+}
+
 func (*ConstLocalPlugin) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }
@@ -26,10 +30,6 @@ func (*ConstLocalPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		Doc:  "reports function-owned package constants and local constants used once",
 		Run:  runConstLocal,
 	}}, nil
-}
-
-func NewConstLocal(_ any) (register.LinterPlugin, error) {
-	return &ConstLocalPlugin{}, nil
 }
 
 type localConstant struct {

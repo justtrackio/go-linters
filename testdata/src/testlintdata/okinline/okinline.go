@@ -133,8 +133,6 @@ func Nested() {
 	}
 }
 
-func widgetOK() (*widget.Service, bool) { return nil, true }
-
 func PackageShadow() *widget.Service {
 	_ = widget.Service{}
 	widget, ok := widgetOK() // want "if ok can be inlined by hoisting widget \\(renamed to service to avoid shadowing\\) to var declarations at the top of the function and changing := to ="
@@ -143,6 +141,8 @@ func PackageShadow() *widget.Service {
 	}
 	return widget
 }
+
+func widgetOK() (*widget.Service, bool) { return nil, true }
 
 func AlreadyInline() {
 	if event, ok := normalize(); !ok {
