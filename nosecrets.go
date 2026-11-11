@@ -80,7 +80,7 @@ func (s secretAnalysis) check(call *ast.CallExpr) {
 	var ok bool
 	var start int
 
-	if start, ok = s.sink(call.Fun, 0); !ok {
+	if start, ok = s.sink(call.Fun, 0); !ok || start > len(call.Args) {
 		return
 	}
 
@@ -111,8 +111,16 @@ func (s secretAnalysis) sink(expression ast.Expr, depth int) (int, bool) {
 
 			switch expr.Sel.Name {
 			case "WithFields":
+				if selected.Kind() == types.MethodExpr {
+					return 1, true
+				}
+
 				return 0, true
 			case "Trace", "Debug", "Info", "Warn", "Error":
+				if signature, ok := selected.Obj().Type().(*types.Signature); !ok || signature.Params().Len() != 3 || !signature.Variadic() {
+					return 0, false
+				}
+
 				if selected.Kind() == types.MethodExpr {
 					return 2, true
 				}

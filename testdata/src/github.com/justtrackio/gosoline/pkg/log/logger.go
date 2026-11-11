@@ -32,3 +32,7 @@ func (*Concrete) Warn(context.Context, string, ...any)  {}
 func (*Concrete) Error(context.Context, string, ...any) {}
 func (l *Concrete) WithChannel(string) Logger           { return l }
 func (l *Concrete) WithFields(Fields) Logger            { return l }
+
+type DiagnosticError struct{}
+
+func (DiagnosticError) Error() string { return "failure" }
