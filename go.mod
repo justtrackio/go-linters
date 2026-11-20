@@ -2,6 +2,8 @@ module github.com/justtrackio/go-linters
 
 go 1.27.0
 
+toolchain go1.27.4
+
 require (
 	github.com/golangci/plugin-module-register v0.1.2
 	github.com/stretchr/testify v1.12.1
