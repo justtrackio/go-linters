@@ -3,7 +3,7 @@ disable_tools = ["golangci-lint"]
 
 [tools]
 go = "1.27.4"
-"github:justtrackio/go-linters" = "0.4.0"
+"github:justtrackio/go-linters" = "0.5.0"
 
 [tasks.bundle]
 description = "Build the local go-linters bundle with the pinned upstream runner"
