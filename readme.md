@@ -1,5 +1,21 @@
 # go-linters
 
+## Confidential diagnostics (`nosecrets`)
+
+The `justtrack` bundle includes `nosecrets`. It checks typed Gosoline logging and
+`WithFields` calls, `fmt.Errorf`, `errors.New` and standard log calls for obvious
+password/API-key/token/secret values, credential-bearing structs, simple aliases,
+string construction and nested formatting. Explicit `log.Secret` values are safe;
+converting them back to string defeats that protection and is reported. Normal
+error wrapping and diagnostic literals such as `refresh_token` remain valid.
+
+The rule emits diagnostics without an automatic security rewrite. Use safe
+diagnostic projections, `log.Secret`, or protect a provider error at its source
+with `log.RedactError`. It is a conservative intrapackage check, not whole-program
+taint analysis; runtime privacy boundaries and serialized-output tests remain
+necessary. Reassigned aliases are treated conservatively. Consumer adoption
+requires releasing/updating the bundle rather than changing a local lint flag.
+
 Custom golangci-lint bundle containing the `constlocal`, `declfilecheck`, `funcmethod`, `gosologger`, `intest`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `methodorder` analyzers.
 
 ## Install with mise
