@@ -1,6 +1,6 @@
 # go-linters
 
-Custom golangci-lint bundle containing the `constlocal`, `declfilecheck`, `funcmethod`, `gosologger`, `intest`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `methodorder` analyzers.
+Custom golangci-lint bundle containing the `constlocal`, `declfilecheck`, `funcmethod`, `gosologger`, `intest`, `iferrinline`, `methodfilecheck`, `multilineblock`, `noanonstruct`, `okinline`, and `methodorder` analyzers. The separate opt-in `httpauthz` plugin checks HTTP route authorization.
 
 ## Install with mise
 
@@ -58,6 +58,56 @@ mise exec -- golangci-lint run --build-tags integration,fixtures ./...
 Refresh it with `mise upgrade github:justtrackio/go-linters`, or add that command to the shared lint task.
 A committed `mise.lock` can retain an older version.
 New releases can introduce lint failures on unchanged branches.
+
+## HTTP authorization gate
+
+`httpauthz` is a dedicated plugin, not part of `justtrack`. Enable it independently
+in `.golangci.yml` for interactive lint feedback:
+
+```yaml
+linters:
+  enable:
+    - httpauthz
+  settings:
+    custom:
+      httpauthz:
+        type: module
+        description: checks HTTP route authorization
+        original-url: github.com/justtrackio/go-linters
+```
+
+For the CI gate, run the standalone analyzer over all production packages:
+
+```sh
+go install github.com/justtrackio/go-linters/cmd/httpauthz@<version>
+httpauthz ./...
+```
+
+Set `GOFLAGS` or run additional invocations for each build-tag/platform
+combination used to ship the service. The standalone command includes generated
+Go files and ignores `_test.go` files. It does not interpret `//nolint` comments:
+do not rely on golangci-lint alone for this gate, since its exclusion and
+suppression configuration can hide diagnostics.
+
+Every `httpserver.Router` route must have exactly one handler, passed directly
+as `authzhttp.Bind`, `BindWithOptions`, `BindN`, `BindPrepared`, or `Exempt`.
+The import path is `github.com/gosoline-project/authz/httpserver`; import aliases
+and explicit generic type arguments are supported. Put shared middleware on a
+router group with `Use` or `UseFactory`, not alongside the route handler.
+`Exempt` requires a nonblank compile-time constant reason and a real Gin
+handler; its use is an explicit, reviewable authorization exception, not a
+lint suppression. `HandleWith` must directly use `httpserver.With` with an
+inline registration callback; routes in the callback obey the same rule.
+
+The analyzer rejects recognized raw Gin registrations, registration method
+values and expressions, opaque `HandleWith` factories including SQLH automatic
+CRUD mounting, passing a router to external helpers, independent `net/http`
+and Gin serving, and known ways to serve outside the route list. It checks
+symbols and types, not names alone. It is a package-local static check, not
+whole-program or runtime proof: reflection, unsafe code, unrecognized routing
+libraries, dynamic dispatch, code outside the analyzed packages and build
+variants, and serving performed inside dependencies cannot be exhaustively
+verified. Do not use these to bypass the gate; audit or prohibit them separately.
 
 ## Rules
 
