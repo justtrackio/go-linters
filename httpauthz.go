@@ -47,6 +47,7 @@ func runHTTPAuthz(pass *analysis.Pass) (any, error) {
 		if inTestFile(pass, file) {
 			continue
 		}
+
 		ast.PreorderStack(file, nil, func(node ast.Node, stack []ast.Node) bool {
 			switch n := node.(type) {
 			case *ast.CallExpr:
@@ -56,6 +57,7 @@ func runHTTPAuthz(pass *analysis.Pass) (any, error) {
 				if selection == nil || (selection.Kind() != types.MethodExpr && isDirectHTTPCall(n, stack)) {
 					break
 				}
+
 				fn, _ := selection.Obj().(*types.Func)
 				if isRouteMethod(fn, httpServerPackage) || isRouteMethod(fn, ginPackage) || isNetHTTPRegistration(fn) || isGinServing(fn) || isHTTPServeHTTP(fn) {
 					pass.Reportf(n.Pos(), "opaque HTTP registration method values and expressions are not supported")
@@ -70,14 +72,17 @@ func runHTTPAuthz(pass *analysis.Pass) (any, error) {
 							stack = stack[:len(stack)-1]
 						}
 					}
+
 					if !isDirectHTTPCall(expr, stack) {
 						pass.Reportf(n.Pos(), "opaque HTTP serving function values are unsupported")
 					}
 				}
 			}
+
 			return true
 		})
 	}
+
 	return nil, nil
 }
 
@@ -92,6 +97,7 @@ func isDirectHTTPCall(expr ast.Expr, stack []ast.Node) bool {
 			return false
 		}
 	}
+
 	return false
 }
 
@@ -119,6 +125,7 @@ func calledFunc(pass *analysis.Pass, expr ast.Expr) *types.Func {
 		fn, _ := pass.TypesInfo.Uses[e.Sel].(*types.Func)
 		return fn
 	}
+
 	return nil
 }
 
@@ -130,13 +137,16 @@ func isRouteMethod(fn *types.Func, pkg string) bool {
 	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != pkg {
 		return false
 	}
+
 	sig, ok := fn.Type().(*types.Signature)
 	if !ok || sig.Recv() == nil {
 		return false
 	}
+
 	if pkg == httpServerPackage && receiverName(sig.Recv().Type()) != "Router" {
 		return false
 	}
+
 	if pkg == ginPackage {
 		switch receiverName(sig.Recv().Type()) {
 		case "Engine", "RouterGroup", "IRouter", "IRoutes":
@@ -144,10 +154,12 @@ func isRouteMethod(fn *types.Func, pkg string) bool {
 			return false
 		}
 	}
+
 	switch fn.Name() {
 	case "Handle", "HandleWith", "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD", "Any", "Match", "Static", "StaticFS", "StaticFile", "StaticFileFS", "NoRoute", "NoMethod":
 		return true
 	}
+
 	return false
 }
 
@@ -156,9 +168,11 @@ func receiverName(t types.Type) string {
 	if p, ok := t.(*types.Pointer); ok {
 		t = p.Elem()
 	}
+
 	if named, ok := types.Unalias(t).(*types.Named); ok {
 		return named.Obj().Name()
 	}
+
 	return ""
 }
 
@@ -166,10 +180,12 @@ func isNetHTTPRegistration(fn *types.Func) bool {
 	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != "net/http" {
 		return false
 	}
+
 	switch fn.Name() {
 	case "Handle", "HandleFunc", "Serve", "ServeTLS", "ListenAndServe", "ListenAndServeTLS":
 		return true
 	}
+
 	return false
 }
 
@@ -177,14 +193,17 @@ func isGinServing(fn *types.Func) bool {
 	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != ginPackage {
 		return false
 	}
+
 	sig, ok := fn.Type().(*types.Signature)
 	if !ok || sig.Recv() == nil || receiverName(sig.Recv().Type()) != "Engine" {
 		return false
 	}
+
 	switch fn.Name() {
 	case "Run", "RunTLS", "RunUnix", "RunFd", "RunListener", "RunQUIC", "ServeHTTP", "HandleContext":
 		return true
 	}
+
 	return false
 }
 
@@ -192,26 +211,30 @@ func isHTTPServeHTTP(fn *types.Func) bool {
 	if fn == nil || fn.Name() != "ServeHTTP" {
 		return false
 	}
+
 	sig, ok := fn.Type().(*types.Signature)
 	if !ok || sig.Recv() == nil || sig.Params().Len() != 2 || sig.Results().Len() != 0 {
 		return false
 	}
+
 	first, ok := types.Unalias(sig.Params().At(0).Type()).(*types.Named)
 	if !ok || first.Obj().Pkg() == nil || first.Obj().Pkg().Path() != "net/http" || first.Obj().Name() != "ResponseWriter" {
 		return false
 	}
-	ptr, ok := types.Unalias(sig.Params().At(1).Type()).(*types.Pointer)
-	if !ok {
-		return false
+
+	if ptr, ok := types.Unalias(sig.Params().At(1).Type()).(*types.Pointer); ok {
+		second, ok := types.Unalias(ptr.Elem()).(*types.Named)
+		return ok && second.Obj().Pkg() != nil && second.Obj().Pkg().Path() == "net/http" && second.Obj().Name() == "Request"
 	}
-	second, ok := types.Unalias(ptr.Elem()).(*types.Named)
-	return ok && second.Obj().Pkg() != nil && second.Obj().Pkg().Path() == "net/http" && second.Obj().Name() == "Request"
+
+	return false
 }
 
 func opaqueHTTPFunction(fn *types.Func) string {
 	if fn == nil || fn.Pkg() == nil {
 		return ""
 	}
+
 	switch fn.Pkg().Path() {
 	case ginPackage:
 		if fn.Name() == "WrapH" || fn.Name() == "WrapF" {
@@ -229,18 +252,82 @@ func opaqueHTTPFunction(fn *types.Func) string {
 			return "SQLH automatic route mounting is unsupported"
 		}
 	}
+
 	return ""
+}
+
+func checkHTTPAuthzCall(pass *analysis.Pass, call *ast.CallExpr) {
+	fn := calledFunc(pass, call.Fun)
+	if functionIs(fn, httpServerPackage, "Use") {
+		checkHTTPAuthzMiddleware(pass, call)
+	}
+
+	if isGinServing(fn) {
+		pass.Reportf(call.Pos(), "independent Gin serving is unsupported")
+		return
+	}
+
+	if isHTTPServeHTTP(fn) {
+		pass.Reportf(call.Pos(), "external HTTP handler serving cannot be verified")
+		return
+	}
+
+	if isRouteMethod(fn, ginPackage) {
+		pass.Reportf(call.Pos(), "raw Gin route registration is unsupported; use httpserver.Router")
+		return
+	}
+
+	if isNetHTTPRegistration(fn) {
+		pass.Reportf(call.Pos(), "independent net/http registration or serving is unsupported")
+		return
+	}
+
+	if diagnostic := opaqueHTTPFunction(fn); diagnostic != "" {
+		pass.Reportf(call.Pos(), "%s", diagnostic)
+		return
+	}
+
+	if passesRouterToExternalFunction(pass, call, fn) {
+		pass.Reportf(call.Pos(), "passing httpserver.Router to an external registration helper is unsupported")
+		return
+	}
+
+	if !isRouteMethod(fn, httpServerPackage) {
+		return
+	}
+
+	if sel, ok := uninstantiate(call.Fun).(*ast.SelectorExpr); ok {
+		if selection := pass.TypesInfo.Selections[sel]; selection != nil && selection.Kind() == types.MethodExpr {
+			return
+		}
+	}
+
+	if fn.Name() == "HandleWith" {
+		checkHTTPAuthzWith(pass, call)
+		return
+	}
+
+	start := 1
+	if fn.Name() == "Handle" {
+		start = 2
+	}
+
+	if call.Ellipsis.IsValid() || len(call.Args) != start+1 || !approvedHTTPHandler(pass, call.Args[start]) {
+		pass.Reportf(call.Pos(), "route must have exactly one direct authzhttp Bind, BindWithOptions, BindN, BindPrepared, or Exempt handler")
+	}
 }
 
 func passesRouterToExternalFunction(pass *analysis.Pass, call *ast.CallExpr, fn *types.Func) bool {
 	if fn == nil || fn.Pkg() == nil || fn.Pkg() == pass.Pkg || fn.Pkg().Path() == httpServerPackage {
 		return false
 	}
+
 	for _, arg := range call.Args {
 		t := types.Unalias(pass.TypesInfo.TypeOf(arg))
 		if ptr, ok := t.(*types.Pointer); ok {
 			t = types.Unalias(ptr.Elem())
 		}
+
 		if named, ok := t.(*types.Named); ok {
 			obj := named.Obj()
 			if obj.Pkg() != nil && obj.Pkg().Path() == httpServerPackage && obj.Name() == "Router" {
@@ -248,19 +335,24 @@ func passesRouterToExternalFunction(pass *analysis.Pass, call *ast.CallExpr, fn 
 			}
 		}
 	}
+
 	return false
 }
 
 func checkHTTPAuthzMiddleware(pass *analysis.Pass, call *ast.CallExpr) {
+	var binder *ast.CallExpr
+	var ok bool
+
 	for _, arg := range call.Args {
-		binder, ok := unparen(arg).(*ast.CallExpr)
-		if !ok {
+		if binder, ok = ast.Unparen(arg).(*ast.CallExpr); !ok {
 			continue
 		}
+
 		fn := calledFunc(pass, binder.Fun)
 		if fn == nil || fn.Pkg() == nil {
 			continue
 		}
+
 		path := fn.Pkg().Path()
 		if ((path == httpServerPackage || path == authzHTTPPackage) && strings.HasPrefix(fn.Name(), "Bind")) ||
 			functionIs(fn, authzHTTPPackage, "Exempt") {
@@ -269,76 +361,31 @@ func checkHTTPAuthzMiddleware(pass *analysis.Pass, call *ast.CallExpr) {
 	}
 }
 
-func checkHTTPAuthzCall(pass *analysis.Pass, call *ast.CallExpr) {
-	fn := calledFunc(pass, call.Fun)
-	if functionIs(fn, httpServerPackage, "Use") {
-		checkHTTPAuthzMiddleware(pass, call)
-	}
-	if isGinServing(fn) {
-		pass.Reportf(call.Pos(), "independent Gin serving is unsupported")
-		return
-	}
-	if isHTTPServeHTTP(fn) {
-		pass.Reportf(call.Pos(), "external HTTP handler serving cannot be verified")
-		return
-	}
-	if isRouteMethod(fn, ginPackage) {
-		pass.Reportf(call.Pos(), "raw Gin route registration is unsupported; use httpserver.Router")
-		return
-	}
-	if isNetHTTPRegistration(fn) {
-		pass.Reportf(call.Pos(), "independent net/http registration or serving is unsupported")
-		return
-	}
-	if diagnostic := opaqueHTTPFunction(fn); diagnostic != "" {
-		pass.Reportf(call.Pos(), "%s", diagnostic)
-		return
-	}
-	if passesRouterToExternalFunction(pass, call, fn) {
-		pass.Reportf(call.Pos(), "passing httpserver.Router to an external registration helper is unsupported")
-		return
-	}
-	if !isRouteMethod(fn, httpServerPackage) {
-		return
-	}
-	if sel, ok := uninstantiate(call.Fun).(*ast.SelectorExpr); ok {
-		if selection := pass.TypesInfo.Selections[sel]; selection != nil && selection.Kind() == types.MethodExpr {
-			return
-		}
-	}
-	if fn.Name() == "HandleWith" {
-		checkHTTPAuthzWith(pass, call)
-		return
-	}
-	start := 1
-	if fn.Name() == "Handle" {
-		start = 2
-	}
-	if call.Ellipsis.IsValid() || len(call.Args) != start+1 || !approvedHTTPHandler(pass, call.Args[start]) {
-		pass.Reportf(call.Pos(), "route must have exactly one direct authzhttp Bind, BindWithOptions, BindN, BindPrepared, or Exempt handler")
-	}
-}
-
 func checkHTTPAuthzWith(pass *analysis.Pass, call *ast.CallExpr) {
 	if len(call.Args) == 1 {
-		if with, ok := unparen(call.Args[0]).(*ast.CallExpr); ok && functionIs(calledFunc(pass, with.Fun), httpServerPackage, "With") && len(with.Args) == 2 {
-			if _, ok := unparen(with.Args[1]).(*ast.FuncLit); ok {
+		if with, ok := ast.Unparen(call.Args[0]).(*ast.CallExpr); ok && functionIs(calledFunc(pass, with.Fun), httpServerPackage, "With") && len(with.Args) == 2 {
+			if _, ok := ast.Unparen(with.Args[1]).(*ast.FuncLit); ok {
 				return
 			}
 		}
 	}
+
 	pass.Reportf(call.Pos(), "HandleWith requires direct httpserver.With with an inline registration callback")
 }
 
 func approvedHTTPHandler(pass *analysis.Pass, expr ast.Expr) bool {
-	call, ok := unparen(expr).(*ast.CallExpr)
-	if !ok {
+	var call *ast.CallExpr
+	var ok bool
+
+	if call, ok = ast.Unparen(expr).(*ast.CallExpr); !ok {
 		return false
 	}
+
 	fn := calledFunc(pass, call.Fun)
 	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != authzHTTPPackage {
 		return false
 	}
+
 	switch fn.Name() {
 	case "Bind", "BindWithOptions", "BindN", "BindPrepared":
 		return true
@@ -346,18 +393,10 @@ func approvedHTTPHandler(pass *analysis.Pass, expr ast.Expr) bool {
 		if len(call.Args) != 2 || pass.TypesInfo.Types[call.Args[1]].IsNil() {
 			return false
 		}
+
 		value := pass.TypesInfo.Types[call.Args[0]].Value
 		return value != nil && value.Kind() == constant.String && strings.TrimSpace(constant.StringVal(value)) != ""
 	}
-	return false
-}
 
-func unparen(expr ast.Expr) ast.Expr {
-	for {
-		p, ok := expr.(*ast.ParenExpr)
-		if !ok {
-			return expr
-		}
-		expr = p.X
-	}
+	return false
 }
