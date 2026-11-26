@@ -11,6 +11,7 @@ import (
 )
 
 const (
+	authzHTTPPackage  = "github.com/gosoline-project/authz/httpserver"
 	httpServerPackage = "github.com/gosoline-project/httpserver"
 	ginPackage        = "github.com/gin-gonic/gin"
 )
@@ -181,7 +182,7 @@ func isGinServing(fn *types.Func) bool {
 		return false
 	}
 	switch fn.Name() {
-	case "Run", "RunTLS", "RunUnix", "RunFd", "RunListener", "RunQUIC", "ServeHTTP":
+	case "Run", "RunTLS", "RunUnix", "RunFd", "RunListener", "RunQUIC", "ServeHTTP", "HandleContext":
 		return true
 	}
 	return false
@@ -199,7 +200,7 @@ func isHTTPServeHTTP(fn *types.Func) bool {
 	if !ok || first.Obj().Pkg() == nil || first.Obj().Pkg().Path() != "net/http" || first.Obj().Name() != "ResponseWriter" {
 		return false
 	}
-	ptr, ok := sig.Params().At(1).Type().(*types.Pointer)
+	ptr, ok := types.Unalias(sig.Params().At(1).Type()).(*types.Pointer)
 	if !ok {
 		return false
 	}
@@ -250,8 +251,29 @@ func passesRouterToExternalFunction(pass *analysis.Pass, call *ast.CallExpr, fn 
 	return false
 }
 
+func checkHTTPAuthzMiddleware(pass *analysis.Pass, call *ast.CallExpr) {
+	for _, arg := range call.Args {
+		binder, ok := unparen(arg).(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		fn := calledFunc(pass, binder.Fun)
+		if fn == nil || fn.Pkg() == nil {
+			continue
+		}
+		path := fn.Pkg().Path()
+		if ((path == httpServerPackage || path == authzHTTPPackage) && strings.HasPrefix(fn.Name(), "Bind")) ||
+			functionIs(fn, authzHTTPPackage, "Exempt") {
+			pass.Reportf(arg.Pos(), "route handlers must be mounted as routes, not router middleware")
+		}
+	}
+}
+
 func checkHTTPAuthzCall(pass *analysis.Pass, call *ast.CallExpr) {
 	fn := calledFunc(pass, call.Fun)
+	if functionIs(fn, httpServerPackage, "Use") {
+		checkHTTPAuthzMiddleware(pass, call)
+	}
 	if isGinServing(fn) {
 		pass.Reportf(call.Pos(), "independent Gin serving is unsupported")
 		return
@@ -314,14 +336,14 @@ func approvedHTTPHandler(pass *analysis.Pass, expr ast.Expr) bool {
 		return false
 	}
 	fn := calledFunc(pass, call.Fun)
-	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != "github.com/gosoline-project/authz/httpserver" {
+	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != authzHTTPPackage {
 		return false
 	}
 	switch fn.Name() {
 	case "Bind", "BindWithOptions", "BindN", "BindPrepared":
 		return true
 	case "Exempt":
-		if len(call.Args) != 2 {
+		if len(call.Args) != 2 || pass.TypesInfo.Types[call.Args[1]].IsNil() {
 			return false
 		}
 		value := pass.TypesInfo.Types[call.Args[0]].Value

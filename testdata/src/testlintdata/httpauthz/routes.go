@@ -39,6 +39,7 @@ func routes(r *hs.Router, g *gin.RouterGroup, engine *gin.Engine, mux *http.Serv
 	r.GET("/extra", auth.Exempt(reason, raw), raw)     // want "exactly one direct"
 	r.GET("/blank", auth.Exempt(" \t", raw))           // want "exactly one direct"
 	r.GET("/dynamic", auth.Exempt(dynamicReason, raw)) // want "exactly one direct"
+	r.GET("/nil", auth.Exempt(reason, nil))            // want "exactly one direct"
 	v := auth.Exempt(reason, raw)
 	r.GET("/indirect", v) // want "exactly one direct"
 	handlers := []gin.HandlerFunc{auth.Exempt(reason, raw)}
@@ -60,9 +61,21 @@ func routes(r *hs.Router, g *gin.RouterGroup, engine *gin.Engine, mux *http.Serv
 	var routes gin.IRoutes = g
 	routes.GET("/interface", raw)              // want "raw Gin route"
 	engine.Run()                               // want "independent Gin serving"
+	engine.HandleContext(nil)                  // want "independent Gin serving"
+	_ = engine.HandleContext                   // want "opaque HTTP registration"
 	http.ListenAndServe(":8080", nil)          // want "independent net/http"
 	http.NotFoundHandler().ServeHTTP(nil, nil) // want "external HTTP handler serving"
 	fmt.Sprint(r)                              // want "external registration helper"
 	_ = hs.CreateEmbeddedStaticServe()         // want "middleware-based static serving"
 	_ = hs.NewWithInterfaces()                 // want "externally configured router"
+	r.Use(hs.Bind(raw))                        // want "route handlers must be mounted as routes"
+	r.Use(auth.Exempt(reason, raw))            // want "route handlers must be mounted as routes"
+	aliasServeHTTP{}.ServeHTTP(nil, nil)       // want "external HTTP handler serving"
+}
+
+type aliasedRequest = *http.Request
+
+type aliasServeHTTP struct{}
+
+func (aliasServeHTTP) ServeHTTP(http.ResponseWriter, aliasedRequest) {
 }

@@ -19,5 +19,6 @@ func (r *Router) Group(string) *Router                                          
 func (*Router) Use(...gin.HandlerFunc)                                              {}
 func With[H any](factory func() *H, register func(*Router, *H)) RegisterFactoryFunc { return nil }
 func RunServers(any)                                                                {}
+func Bind(any) gin.HandlerFunc                                                      { return nil }
 func CreateEmbeddedStaticServe() func()                                             { return nil }
 func NewWithInterfaces() *int                                                       { return nil }

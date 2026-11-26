@@ -80,7 +80,7 @@ For the CI gate, run the standalone analyzer over all production packages:
 
 ```sh
 go install github.com/justtrackio/go-linters/cmd/httpauthz@<version>
-httpauthz ./...
+httpauthz -test=false ./...
 ```
 
 Set `GOFLAGS` or run additional invocations for each build-tag/platform
@@ -94,6 +94,7 @@ as `authzhttp.Bind`, `BindWithOptions`, `BindN`, `BindPrepared`, or `Exempt`.
 The import path is `github.com/gosoline-project/authz/httpserver`; import aliases
 and explicit generic type arguments are supported. Put shared middleware on a
 router group with `Use` or `UseFactory`, not alongside the route handler.
+Do not put a response binder in `Use`; mount it as a route.
 `Exempt` requires a nonblank compile-time constant reason and a real Gin
 handler; its use is an explicit, reviewable authorization exception, not a
 lint suppression. `HandleWith` must directly use `httpserver.With` with an
