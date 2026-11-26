@@ -357,6 +357,8 @@ Local constants used several times remain valid, including references from neste
 
 Exported package constants, explicitly typed constants, unused constants, generated declarations,
 and declarations in build-constrained files are skipped. Blocks with `iota` or implicit values are skipped.
+Two or more adjacent constants in the same `const` declaration are also skipped when their first
+camel-case word matches case-insensitively, as in `metricRequestCount`, `metricRequestSize`, and `MetricTotalDuration`.
 A reference from generated code prevents a report. No automatic fix is offered.
 
 The `justtrack` bundle includes this rule. To enable it individually, configure `constlocal` as a module plugin.

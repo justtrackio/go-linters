@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/golangci/plugin-module-register/register"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/tools/go/analysis/analysistest"
 	"golang.org/x/tools/go/analysis/checker"
@@ -50,4 +51,19 @@ func TestConstLocalTestReferences(t *testing.T) {
 	}
 
 	require.True(t, checkedTests)
+}
+
+func TestLocalConstantPrefix(t *testing.T) {
+	assert.Equal(t, "metric", localConstantPrefix("metricFoo"))
+	assert.Equal(t, "Metric", localConstantPrefix("MetricBaz"))
+	assert.Equal(t, "metrics", localConstantPrefix("metricsValue"))
+	assert.Equal(t, "multiply", localConstantPrefix("multiplyValue"))
+	assert.Equal(t, "metric", localConstantPrefix("metricID"))
+	assert.Equal(t, "IP", localConstantPrefix("IPLength"))
+	assert.Equal(t, "IP", localConstantPrefix("IPAddr"))
+	assert.Equal(t, "Initial", localConstantPrefix("InitialSize"))
+	assert.Equal(t, "IP", localConstantPrefix("IP"))
+	assert.Equal(t, "metric", localConstantPrefix("metric"))
+	assert.Equal(t, "IP", localConstantPrefix("IPÉtat"))
+	assert.Equal(t, "métrique", localConstantPrefix("métriqueÉtat"))
 }
