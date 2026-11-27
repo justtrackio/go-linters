@@ -43,6 +43,7 @@ func runMethodFileCheck(pass *analysis.Pass) (any, error) {
 	locations := make(map[string]methodFileType)
 	named := make(map[string]*types.Named)
 	guarded := make(map[*ast.File]bool)
+	accessors := collectContextKeyAccessors(pass)
 
 	for _, file := range pass.Files {
 		if ast.IsGenerated(file) {
@@ -82,13 +83,13 @@ func runMethodFileCheck(pass *analysis.Pass) (any, error) {
 			continue
 		}
 
-		checkMethodFile(pass, file, locations, named, guarded)
+		checkMethodFile(pass, file, locations, named, guarded, accessors)
 	}
 
 	return nil, nil
 }
 
-func checkMethodFile(pass *analysis.Pass, file *ast.File, locations map[string]methodFileType, named map[string]*types.Named, guarded map[*ast.File]bool) {
+func checkMethodFile(pass *analysis.Pass, file *ast.File, locations map[string]methodFileType, named map[string]*types.Named, guarded map[*ast.File]bool, accessors map[*ast.FuncDecl]*contextKeyGroup) {
 	first := make(map[string]*ast.FuncDecl)
 	previousReceiver := ""
 
@@ -106,7 +107,7 @@ func checkMethodFile(pass *analysis.Pass, file *ast.File, locations map[string]m
 		typ, known := locations[receiver]
 		if first[receiver] == nil {
 			first[receiver] = fn
-			if known && typ.file == file && (index < typ.index || !methodFileOnlyConstructors(pass, file.Decls[typ.index+1:index], named[receiver])) {
+			if known && typ.file == file && (index < typ.index || !methodFileOnlyRelatedFunctions(pass, file.Decls[typ.index:index], named[receiver], accessors)) {
 				pass.Reportf(fn.Pos(), "method %s.%s: keep the receiver type, its constructors, and its first method together", receiver, fn.Name.Name)
 			}
 		} else if receiver != previousReceiver {
@@ -122,13 +123,13 @@ func checkMethodFile(pass *analysis.Pass, file *ast.File, locations map[string]m
 		previousReceiver = receiver
 	}
 
-	checkMethodFileConstructors(pass, file, locations, named, first)
+	checkMethodFileConstructors(pass, file, locations, named, first, accessors)
 }
 
-func checkMethodFileConstructors(pass *analysis.Pass, file *ast.File, locations map[string]methodFileType, named map[string]*types.Named, first map[string]*ast.FuncDecl) {
+func checkMethodFileConstructors(pass *analysis.Pass, file *ast.File, locations map[string]methodFileType, named map[string]*types.Named, first map[string]*ast.FuncDecl, accessors map[*ast.FuncDecl]*contextKeyGroup) {
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil {
+		if !ok || fn.Recv != nil || accessors[fn] != nil {
 			continue
 		}
 
@@ -145,14 +146,29 @@ func checkMethodFileConstructors(pass *analysis.Pass, file *ast.File, locations 
 	}
 }
 
-func methodFileOnlyConstructors(pass *analysis.Pass, decls []ast.Decl, recv *types.Named) bool {
+func methodFileOnlyRelatedFunctions(pass *analysis.Pass, decls []ast.Decl, recv *types.Named, accessors map[*ast.FuncDecl]*contextKeyGroup) bool {
+	var fn *ast.FuncDecl
+	var ok bool
+
 	if recv == nil {
 		return true
 	}
 
-	for _, decl := range decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || !methodFileConstructsFor(pass, fn, recv) {
+	typeDeclaration := decls[0]
+	for _, decl := range decls[1:] {
+		if fn, ok = decl.(*ast.FuncDecl); !ok {
+			return false
+		}
+
+		if group := accessors[fn]; group != nil {
+			if group.declaration != typeDeclaration {
+				return false
+			}
+
+			continue
+		}
+
+		if !methodFileConstructsFor(pass, fn, recv) {
 			return false
 		}
 	}

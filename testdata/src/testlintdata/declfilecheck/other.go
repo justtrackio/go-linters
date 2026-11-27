@@ -10,3 +10,7 @@ func Other() {
 	_ = implicitSecond
 	_ = constPairB
 }
+
+func OtherConstants() int {
+	return metricDuration
+}

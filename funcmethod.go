@@ -54,6 +54,7 @@ func collectMethodOwnership(pass *analysis.Pass) (map[*types.Func]*methodOwnersh
 	var obj *types.Func
 
 	functions := map[*types.Func]*methodOwnership{}
+	accessors := collectContextKeyAccessors(pass)
 	var ordered []*methodOwnership
 
 	for _, file := range pass.Files {
@@ -74,6 +75,7 @@ func collectMethodOwnership(pass *analysis.Pass) (map[*types.Func]*methodOwnersh
 			state := &methodOwnership{
 				decl: fn, generated: ast.IsGenerated(file),
 				owners: map[*types.Named]bool{}, callees: map[*methodOwnership]bool{},
+				blocked: accessors[fn] != nil,
 			}
 
 			initializeMethodOwnership(pass, obj, state)

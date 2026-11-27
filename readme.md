@@ -182,7 +182,8 @@ type. This works whether or not tests are loaded.
 The rule conservatively skips exported functions, unused functions, constructors, 
 function values passed around as callbacks, functions reached from package 
 initializers or unrestricted package functions, generic functions with their 
-own type parameters, and names that collide with receiver fields or methods. 
+own type parameters, and names that collide with receiver fields or methods.
+Context accessors recognized by `methodorder` stay with their key type.
 Generated declarations receive no diagnostics, but their calls still count. 
 It analyzes the files selected by the current build tags and platform.
 
@@ -357,6 +358,8 @@ Local constants used several times remain valid, including references from neste
 
 Exported package constants, explicitly typed constants, unused constants, generated declarations,
 and declarations in build-constrained files are skipped. Blocks with `iota` or implicit values are skipped.
+Two or more adjacent constants in the same `const` declaration are also skipped when their first
+camel-case word matches case-insensitively, as in `metricRequestCount`, `metricRequestSize`, and `MetricTotalDuration`.
 A reference from generated code prevents a report. No automatic fix is offered.
 
 The `justtrack` bundle includes this rule. To enable it individually, configure `constlocal` as a module plugin.
@@ -378,11 +381,14 @@ declaration's own file and in tests do not establish a shared collection.
 
 Test references do not establish production ownership. Exported declarations and
 functions establish ownership in their own file; methods do too, preserving the
-receiver placement enforced by `methodfilecheck`. Independent constant specs are
-checked separately. Constant blocks containing implicit expressions or the built-in
-`iota` are considered as a unit to preserve their positional semantics. Multi-name
-constant and variable specs also stay together. Units containing exported names
-or blank identifiers are skipped.
+receiver placement enforced by `methodfilecheck`. Context key types with a read
+and write accessor stay with their `methodorder` group. Adjacent constants in
+the same declaration that share their first camel-case word, ignoring case,
+are checked together against the combined set of production users. Independent
+constant specs are checked separately. Constant blocks containing implicit
+expressions or the built-in `iota` are considered as a unit to preserve their
+positional semantics. Multi-name constant and variable specs also stay together.
+Units containing exported names or blank identifiers are skipped.
 
 Generated files, files with build directives, and platform-specific filenames
 are not move candidates or destinations. Their references still establish ownership
@@ -411,7 +417,8 @@ linters:
 **Autofix: No.**
 
 Keeps receiver types and their methods in the same file. Within that file, the
-first method must follow the type declaration with only constructors in between.
+first method must follow the type declaration. Constructors and context
+accessors for keys declared there may appear in between.
 A constructor is a package function named with a `New`, `Provide`, `Create`, or
 `Build` prefix, exported or unexported, whose first result is the receiver type
 or a pointer to it, alone or alongside a final error.
@@ -648,6 +655,16 @@ sole production caller. Helpers declared in test files still count test referenc
 Repeated uses by the
 same caller count once; self-recursion is ignored. Shared helpers, unused functions and methods,
 package-level references, and recursive caller cycles are exempt.
+
+Context value accessors stay with their key type. A package-level reader and
+writer form a group when they return the result of `context.Context.Value` and
+`context.WithValue` respectively, using literals of the same private empty
+struct key type. This includes readers that return a type-asserted value and
+its `ok` result. Declare the accessors together directly after the key's type
+declaration in the same file, in either order. When a single `type` block
+declares several keys, keep each key's accessors in their own consecutive run
+after that block. The sole-caller rule gives way to this placement. Cross-file
+checks skip generated and build-constrained files.
 
 ```go
 func (s *QueueService[T, F]) PurgeJobs() {} // reported

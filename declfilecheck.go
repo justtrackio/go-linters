@@ -46,6 +46,12 @@ type fileDeclaration struct {
 
 func runDeclFileCheck(pass *analysis.Pass) (any, error) {
 	declarations, objects := collectFileDeclarations(pass)
+	for key := range collectContextKeyGroups(pass) {
+		if declaration := objects[key]; declaration != nil {
+			declaration.movable = false
+		}
+	}
+
 	collectFileDeclarationOwners(pass, declarations, objects)
 	propagateFileDeclarationOwners(declarations)
 	reportFileDeclarations(pass, declarations)
@@ -158,8 +164,8 @@ func collectFileDeclarations(pass *analysis.Pass) (declarations []*fileDeclarati
 				continue
 			}
 
-			if group.Tok == token.CONST && constantBlockDependsOnPosition(pass, group) {
-				declarations = addFileDeclaration(pass, file, group.Tok, group.Specs, declarations, objects)
+			if group.Tok == token.CONST {
+				declarations = addFileConstantDeclarations(pass, file, group, declarations, objects)
 
 				continue
 			}
@@ -171,6 +177,31 @@ func collectFileDeclarations(pass *analysis.Pass) (declarations []*fileDeclarati
 	}
 
 	return declarations, objects
+}
+
+func addFileConstantDeclarations(pass *analysis.Pass, file *ast.File, group *ast.GenDecl, declarations []*fileDeclaration, objects map[types.Object]*fileDeclaration) []*fileDeclaration {
+	if len(group.Specs) == 0 {
+		return declarations
+	}
+
+	if constantBlockDependsOnPosition(pass, group) {
+		return addFileDeclaration(pass, file, token.CONST, group.Specs, declarations, objects)
+	}
+
+	start := 0
+	for i := 1; i < len(group.Specs); i++ {
+		previous := group.Specs[i-1].(*ast.ValueSpec).Names
+
+		current := group.Specs[i].(*ast.ValueSpec).Names
+		if constantNamesSharePrefix(previous[len(previous)-1].Name, current[0].Name) {
+			continue
+		}
+
+		declarations = addFileDeclaration(pass, file, token.CONST, group.Specs[start:i], declarations, objects)
+		start = i
+	}
+
+	return addFileDeclaration(pass, file, token.CONST, group.Specs[start:], declarations, objects)
 }
 
 func constantBlockDependsOnPosition(pass *analysis.Pass, group *ast.GenDecl) bool {

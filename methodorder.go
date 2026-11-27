@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"path/filepath"
 	"strings"
 
 	"github.com/golangci/plugin-module-register/register"
@@ -14,7 +15,7 @@ func init() {
 	register.Plugin("methodorder", NewMethodOrder)
 }
 
-// MethodOrderPlugin orders receiver types, callers, and private helpers.
+// MethodOrderPlugin orders receiver types, context key accessors, callers, and private helpers.
 type MethodOrderPlugin struct{}
 
 func NewMethodOrder(_ any) (register.LinterPlugin, error) {
@@ -28,7 +29,7 @@ func (p *MethodOrderPlugin) GetLoadMode() string {
 func (p *MethodOrderPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	return []*analysis.Analyzer{{
 		Name: "methodorder",
-		Doc:  "reports methods before their receiver type and private helpers before their sole caller in the same file",
+		Doc:  "orders receiver methods, context key accessors, and private helpers with a sole caller",
 		Run:  runMethodOrder,
 	}}, nil
 }
@@ -38,18 +39,38 @@ func runMethodOrder(pass *analysis.Pass) (any, error) {
 	var ok bool
 
 	users := methodOrderUsers(pass)
+	accessors := collectContextKeyAccessors(pass)
+
 	for _, file := range pass.Files {
 		if ast.IsGenerated(file) {
 			continue
 		}
 
 		typePositions := receiverTypePositions(file)
+		seenGroups := make(map[*contextKeyGroup]bool)
+		var precedingDeclaration *ast.GenDecl
+		var precedingGroup *contextKeyGroup
 
 		for _, decl := range file.Decls {
 			if method, ok = decl.(*ast.FuncDecl); !ok {
+				precedingDeclaration, _ = decl.(*ast.GenDecl)
+
 				continue
 			}
 
+			if group := accessors[method]; group != nil {
+				if precedingDeclaration == group.declaration && (precedingGroup == group || !seenGroups[group]) {
+					seenGroups[group] = true
+					precedingGroup = group
+				} else {
+					filename := filepath.Base(pass.Fset.PositionFor(group.declaration.Pos(), false).Filename)
+					pass.Reportf(method.Name.Pos(), "keep context accessor %s with the other accessors directly after context key type %s in %s", method.Name.Name, group.key.Name(), filename)
+				}
+
+				continue
+			}
+
+			precedingDeclaration = nil
 			reportMethodOrderType(pass, method, typePositions)
 
 			reportMethodOrderCaller(pass, file, method, users)

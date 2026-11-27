@@ -4,6 +4,10 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/golangci/plugin-module-register/register"
 	"golang.org/x/tools/go/analysis"
@@ -96,8 +100,8 @@ func collectLocalConstantUses(pass *analysis.Pass, file *ast.File, decl ast.Decl
 }
 
 func localConstantCallArgument(id *ast.Ident, stack []ast.Node) bool {
-	for i := len(stack) - 1; i >= 0; i-- {
-		switch node := stack[i].(type) {
+	for _, s := range slices.Backward(stack) {
+		switch node := s.(type) {
 		case *ast.CallExpr:
 			return id.Pos() > node.Lparen && id.End() <= node.Rparen
 		case ast.Stmt, *ast.FuncLit:
@@ -144,7 +148,9 @@ func collectLocalConstants(pass *analysis.Pass) (map[types.Object]*localConstant
 }
 
 func localConstantValues(pass *analysis.Pass, group *ast.GenDecl) []*localConstant {
+	grouped := groupedLocalConstantNames(group)
 	var constants []*localConstant
+
 	for _, spec := range group.Specs {
 		value := spec.(*ast.ValueSpec)
 		if value.Type != nil {
@@ -152,7 +158,7 @@ func localConstantValues(pass *analysis.Pass, group *ast.GenDecl) []*localConsta
 		}
 
 		for i, name := range value.Names {
-			if name.Name != "_" {
+			if name.Name != "_" && !grouped[name] {
 				expr := value.Values[i]
 				constants = append(constants, &localConstant{
 					name:      name,
@@ -163,4 +169,43 @@ func localConstantValues(pass *analysis.Pass, group *ast.GenDecl) []*localConsta
 	}
 
 	return constants
+}
+
+func groupedLocalConstantNames(group *ast.GenDecl) map[*ast.Ident]bool {
+	grouped := make(map[*ast.Ident]bool)
+	var previous *ast.Ident
+
+	for _, spec := range group.Specs {
+		for _, name := range spec.(*ast.ValueSpec).Names {
+			if previous != nil && constantNamesSharePrefix(previous.Name, name.Name) {
+				grouped[previous] = true
+				grouped[name] = true
+			}
+
+			previous = name
+		}
+	}
+
+	return grouped
+}
+
+func constantNamesSharePrefix(first, second string) bool {
+	return first != "_" && second != "_" && strings.EqualFold(localConstantPrefix(first), localConstantPrefix(second))
+}
+
+func localConstantPrefix(name string) string {
+	var previous rune
+	for offset, current := range name {
+		if offset > 0 && unicode.IsUpper(current) {
+			next, _ := utf8.DecodeRuneInString(name[offset+utf8.RuneLen(current):])
+			// An uppercase letter before a lowercase letter can start a word after an initialism.
+			if !unicode.IsUpper(previous) || unicode.IsLower(next) {
+				return name[:offset]
+			}
+		}
+
+		previous = current
+	}
+
+	return name
 }
