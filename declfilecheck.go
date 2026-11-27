@@ -46,6 +46,12 @@ type fileDeclaration struct {
 
 func runDeclFileCheck(pass *analysis.Pass) (any, error) {
 	declarations, objects := collectFileDeclarations(pass)
+	for key := range collectContextKeyGroups(pass) {
+		if declaration := objects[key]; declaration != nil {
+			declaration.movable = false
+		}
+	}
+
 	collectFileDeclarationOwners(pass, declarations, objects)
 	propagateFileDeclarationOwners(declarations)
 	reportFileDeclarations(pass, declarations)

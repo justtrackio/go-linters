@@ -17,5 +17,5 @@ func TestFuncMethod(t *testing.T) {
 	analyzers, err := plugin.BuildAnalyzers()
 	require.NoError(t, err)
 	require.Len(t, analyzers, 1)
-	analysistest.Run(t, testdataDir(t), analyzers[0], "testlintdata/funcmethod", "testlintdata/funcmethodmain")
+	analysistest.Run(t, testdataDir(t), analyzers[0], "testlintdata/funcmethod", "testlintdata/funcmethodmain", "testlintdata/contextkeyplacement")
 }
