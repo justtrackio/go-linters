@@ -30,5 +30,9 @@ func LocalGroups() int {
 		bitmapEnd         = 6 // want "local constant bitmapEnd is used once"
 	)
 	const bitmapSize = 7 // want "local constant bitmapSize is used once"
-	return httpGet + HTTPPost + httpDelete + bitmapStart + bitmapEnd + bitmapSize
+	const (
+		_            = 8
+		_BitmapSaved = 9 // want "local constant _BitmapSaved is used once"
+	)
+	return httpGet + HTTPPost + httpDelete + bitmapStart + bitmapEnd + bitmapSize + _BitmapSaved
 }

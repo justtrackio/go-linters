@@ -174,21 +174,23 @@ func localConstantValues(pass *analysis.Pass, group *ast.GenDecl) []*localConsta
 func groupedLocalConstantNames(group *ast.GenDecl) map[*ast.Ident]bool {
 	grouped := make(map[*ast.Ident]bool)
 	var previous *ast.Ident
-	var previousPrefix string
 
 	for _, spec := range group.Specs {
 		for _, name := range spec.(*ast.ValueSpec).Names {
-			prefix := localConstantPrefix(name.Name)
-			if previous != nil && name.Name != "_" && strings.EqualFold(previousPrefix, prefix) {
+			if previous != nil && constantNamesSharePrefix(previous.Name, name.Name) {
 				grouped[previous] = true
 				grouped[name] = true
 			}
 
-			previous, previousPrefix = name, prefix
+			previous = name
 		}
 	}
 
 	return grouped
+}
+
+func constantNamesSharePrefix(first, second string) bool {
+	return first != "_" && second != "_" && strings.EqualFold(localConstantPrefix(first), localConstantPrefix(second))
 }
 
 func localConstantPrefix(name string) string {

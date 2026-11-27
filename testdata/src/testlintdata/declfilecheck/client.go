@@ -26,3 +26,7 @@ func Client() {
 	type local struct{}
 	_ = local{}
 }
+
+func ClientConstants() int {
+	return metricCount + metricSize + thresholdValue + metricTail + optionMin + optionMax + flagDefault + FlagOverride
+}

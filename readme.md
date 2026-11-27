@@ -382,11 +382,13 @@ declaration's own file and in tests do not establish a shared collection.
 Test references do not establish production ownership. Exported declarations and
 functions establish ownership in their own file; methods do too, preserving the
 receiver placement enforced by `methodfilecheck`. Context key types with a read
-and write accessor stay with their `methodorder` group. Independent constant specs are
-checked separately. Constant blocks containing implicit expressions or the built-in
-`iota` are considered as a unit to preserve their positional semantics. Multi-name
-constant and variable specs also stay together. Units containing exported names
-or blank identifiers are skipped.
+and write accessor stay with their `methodorder` group. Adjacent constants in
+the same declaration that share their first camel-case word, ignoring case,
+are checked together against the combined set of production users. Independent
+constant specs are checked separately. Constant blocks containing implicit
+expressions or the built-in `iota` are considered as a unit to preserve their
+positional semantics. Multi-name constant and variable specs also stay together.
+Units containing exported names or blank identifiers are skipped.
 
 Generated files, files with build directives, and platform-specific filenames
 are not move candidates or destinations. Their references still establish ownership
